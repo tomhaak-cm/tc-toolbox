@@ -7,7 +7,7 @@ disable-model-invocation: true
 # Fix CVE
 
 Run deterministic operations with `scripts/fix_cve.py` in this skill directory.
-Read `../../README.md` from this skill directory for credentials, command arguments, state, and recovery.
+Read [README.md](README.md) in this skill directory for credentials, command arguments, state, and recovery.
 Keep all run data outside the repository under repair.
 The script requires direct REST credentials. MCP authentication does not supply these credentials.
 

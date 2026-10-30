@@ -3,7 +3,7 @@
 Keep the plugin manifest and the skills in this repository as the source of truth.
 Treat installed plugin directories as copies.
 
-Read `README.md` before you change the CVE workflow.
+Read `skills/fix-cve/README.md` before you change the CVE workflow.
 Keep the script in `skills/fix-cve/scripts/fix_cve.py` free of third-party Python dependencies.
 Keep dependency decisions in the skill and deterministic operations in the script.
 Require explicit approval for major upgrades and dependency overrides.
