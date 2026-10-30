@@ -1,6 +1,6 @@
 ---
 name: fix-cve
-description: Repair CVE tickets from a Jira board with the bundled script. Review hard repairs, then publish one PR per base branch.
+description: Repair CVE tickets from a Jira board with the bundled script. Review difficult repairs, then publish one PR per base branch.
 disable-model-invocation: true
 ---
 
@@ -13,7 +13,7 @@ The script requires direct REST credentials. MCP authentication does not supply 
 
 A **group** contains tickets with one base branch.
 A **skipped** ticket remains in the report without a repair.
-A **hard** repair needs an explicit user decision.
+A **difficult** repair needs an explicit user decision.
 
 ## 1. Collect
 
@@ -50,13 +50,13 @@ The script owns worktree creation, automatic pnpm upgrades, verification, assign
 Use these repair rules:
 
 - **Easy:** A dependency version change without new code or public-API changes. All required checks must pass.
-- **Hard:** A major upgrade, code change, public-API change, or Rating Statement that requests upstream action.
+- **Difficult:** A major upgrade, code change, public-API change, or Rating Statement that requests upstream action.
 - **Minor upgrade:** Review its changelog before `decide --allow-minor` and another `apply`.
 - **Other ecosystems:** Repair manually in the group's worktree, then use `record --status changed` and `verify`.
 - **pnpm:** Read [PNPM.md](PNPM.md) before manual dependency repair or a severity decision.
-- **Overrides:** Offer these only as hard options. Obtain explicit approval and obey the follow-up requirements in PNPM.md.
+- **Overrides:** Offer these only as difficult options. Obtain explicit approval and obey the follow-up requirements in PNPM.md.
 
-An automatic attempt that cannot complete an easy repair becomes hard.
+An automatic attempt that cannot complete an easy repair becomes difficult.
 For missing upstream fixes, research the upstream issue and give options with risk and effort.
 For harder moderate-or-lower findings, include "defer to the next dependency upgrade".
 
@@ -66,17 +66,17 @@ Never mark an unverified repair fixed.
 
 Done when every attempted ticket has a status, change summary, and verification result.
 
-## 4. Review hard repairs
+## 4. Review difficult repairs
 
-Show a table with ticket, branch, status, and possible hard repairs.
-Ask which hard repairs to implement.
+Show a table with ticket, branch, status, and possible difficult repairs.
+Ask which difficult repairs to implement.
 For each selected repair, run `prepare` when necessary and work in that group's worktree.
 Read its repository instructions before edits.
 Use `--allow-major` only after explicit approval of that upgrade.
 Record manual changes with `record --status changed`.
 Run `verify` after the repair.
 
-Repeat until the user selects no more hard repairs.
+Repeat until the user selects no more difficult repairs.
 
 ## 5. Publish
 
@@ -84,7 +84,7 @@ After the user accepts the report, run `publish --yes`.
 The script commits, pushes, opens one PR per changed group, and resolves fixed Jira tickets.
 If Resolve fails, the script attempts Stop Progress and reports the ticket.
 Run `cleanup`.
-Report the PR URLs and all fixed, hard, failed, skipped, unrated, and unresolved tickets.
+Report the PR URLs and all fixed, difficult, failed, skipped, unrated, and unresolved tickets.
 Preserve worktrees when the script reports unpublished or dirty work.
 
 Done when every verified group has a PR and every ticket has a final status.

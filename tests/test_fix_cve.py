@@ -265,7 +265,7 @@ class SafetyTests(unittest.TestCase):
                 with self.assertRaises(cve.WorkflowError):
                     cve.verify_group(state, group, root / "state.json", {})
                 run.assert_not_called()
-            self.assertEqual("hard", ticket["status"])
+            self.assertEqual("difficult", ticket["status"])
             self.assertNotIn("verification", group)
 
     def test_publication_rejects_changes_after_verification(self):

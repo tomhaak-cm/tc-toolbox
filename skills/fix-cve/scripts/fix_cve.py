@@ -298,9 +298,9 @@ def collect(args):
         elif reason:
             status = "skipped" if reason.startswith("No matching") else "decision"
         elif any(not alert["security_vulnerability"].get("first_patched_version") for alert in matches):
-            status, reason = "hard", "No patched version; wait for upstream or replace the package"
+            status, reason = "difficult", "No patched version; wait for upstream or replace the package"
         base = versions[0] if len(versions) == 1 else default if not versions else None
-        if status in ("ready", "hard") and (base is None or base not in accepted):
+        if status in ("ready", "difficult") and (base is None or base not in accepted):
             status, reason = "decision", "Select an affects version and approve unsupported branches"
         state["tickets"][issue["key"]] = {
             "key": issue["key"], "summary": fields["summary"], "cves": cves,
@@ -363,7 +363,7 @@ def decide(args, state):
         if all(alert["patched_version"] for alert in ticket["alerts"]):
             ticket.update(status="ready", reason="")
         else:
-            ticket.update(status="hard", reason="No patched version; wait for upstream or replace the package")
+            ticket.update(status="difficult", reason="No patched version; wait for upstream or replace the package")
     save(args.state, state)
 
 
@@ -645,7 +645,7 @@ def verify_group(state, group, state_path, config):
             if workspace not in audits:
                 audits[workspace] = audit(workspace)
             if findings(audits[workspace], alert):
-                ticket.update(status="hard", reason="Final audit still reports this CVE", verification_pending=False)
+                ticket.update(status="difficult", reason="Final audit still reports this CVE", verification_pending=False)
                 save(state_path, state)
                 raise WorkflowError(ticket["key"] + " is still vulnerable; inspect the group")
     checks = checks_for(path, config)
@@ -711,7 +711,7 @@ def apply(args, state):
                 if any(Path(name).name not in ("package.json", "pnpm-lock.yaml") for name in changed_files(path)):
                     raise OSError("Dependency commands changed source files; inspect the worktree and record its outcome")
                 if all(manifests(workspace) == snapshot for workspace, snapshot in snapshots.items()):
-                    ticket.update(status="hard", reason="No dependency change; inspect branch applicability")
+                    ticket.update(status="difficult", reason="No dependency change; inspect branch applicability")
                 else:
                     ticket.update(status="changed", reason="; ".join(summaries))
             except WorkflowError as exc:
@@ -721,7 +721,7 @@ def apply(args, state):
                 except (WorkflowError, OSError):
                     save(args.state, state)
                     raise
-                ticket.update(status="hard", reason=str(exc))
+                ticket.update(status="difficult", reason=str(exc))
             save(args.state, state)
         if any(ticket["base"] == base and ticket["status"] == "changed"
                for ticket in state["tickets"].values()):
@@ -748,7 +748,7 @@ def record(args, state):
 
 def prepare(args, state):
     bases = {ticket["base"] for ticket in state["tickets"].values()
-             if ticket["base"] and ticket["status"] in ("ready", "hard", "failed", "changed")}
+             if ticket["base"] and ticket["status"] in ("ready", "difficult", "failed", "changed")}
     if args.base:
         if args.base not in bases:
             raise WorkflowError("No actionable tickets for this base")
@@ -933,7 +933,7 @@ def parser():
                 child.add_argument("--base", required=True)
         elif name == "record":
             child.add_argument("ticket")
-            child.add_argument("--status", choices=("changed", "hard", "failed"), required=True)
+            child.add_argument("--status", choices=("changed", "difficult", "failed"), required=True)
             child.add_argument("--summary", required=True)
         elif name == "publish":
             child.add_argument("--yes", action="store_true")

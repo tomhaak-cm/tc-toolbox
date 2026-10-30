@@ -131,7 +131,7 @@ For npm alerts in pnpm workspaces, the script:
 7. Runs the configured build, lint, and tests.
 8. Assigns verified tickets to the authenticated Jira user and starts progress.
 
-The script classifies unsupported repairs as `hard`.
+The script classifies unsupported repairs as `difficult`.
 It restores the manifest and lockfile snapshots after a rejected upgrade.
 Then it restores installed dependencies from the lockfile.
 It preserves earlier fixes in that worktree.
@@ -150,10 +150,10 @@ The agent handles those repairs manually.
 Moderate-or-lower findings get only easy fixes.
 The agent reports harder repairs for these findings with the option to defer them.
 
-### Handle hard repairs
+### Handle difficult repairs
 
-Show the report and ask which hard repairs to implement.
-Create a worktree for a hard group when necessary:
+Show the report and ask which difficult repairs to implement.
+Create a worktree for a difficult group when necessary:
 
 ```sh
 python3 "$SCRIPT" report "$STATE"
@@ -171,7 +171,7 @@ python3 "$SCRIPT" verify "$STATE" --base 2406.4 \
   --checks /absolute/path/to/checks.json
 ```
 
-`record` also accepts `hard` and `failed`.
+`record` also accepts `difficult` and `failed`.
 Only successful verification marks a ticket `fixed`.
 A failed build, lint, or test phase leaves the changes available for repair.
 After a repair, run `verify` again.
@@ -184,7 +184,7 @@ The agent must also track its removal and add the required customer release note
 
 ### Publish and clean
 
-After the user accepts the report and selects no more hard repairs, publish:
+After the user accepts the report and selects no more difficult repairs, publish:
 
 ```sh
 python3 "$SCRIPT" publish "$STATE" --yes
