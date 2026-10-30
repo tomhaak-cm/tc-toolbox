@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from html import escape
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -24,10 +25,30 @@ FIELDS = [
     "customfield_12042", "customfield_12043", "customfield_11680",
 ]
 TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+SKIPPABLE = ("ready", "decision", "difficult")
+FIXABLE = {
+    "ready": "Yes, automatic repair pending apply",
+    "changed": "Yes, manual repair recorded",
+    "fixed": "Fixed and verified",
+    "resolved": "Fixed, Jira resolved",
+    "resolve_failed": "Fixed, Jira resolve failed",
+    "difficult": "No, difficult",
+    "decision": "Decision needed",
+    "failed": "Verification failed",
+    "applying": "Interrupted during upgrade",
+    "skipped": "Skipped",
+    "unrated": "Not touched",
+}
 
 
 class WorkflowError(Exception):
     pass
+
+
+class ApprovalNeeded(WorkflowError):
+    def __init__(self, message, level):
+        super().__init__(message)
+        self.level = level
 
 
 class SameOriginRedirect(HTTPRedirectHandler):
@@ -255,6 +276,8 @@ def match_alerts(issue, alerts):
 def collect(args):
     if args.state.exists():
         raise WorkflowError("State already exists; choose a new --state path")
+    if args.checks:
+        read_checks(args.checks)
     root, repo, default = repository(args.repo)
     if root == args.state.resolve().parent or root in args.state.resolve().parents:
         raise WorkflowError("Keep the state file outside the source repository; it contains private ticket data")
@@ -283,7 +306,8 @@ def collect(args):
         "default_branch": default, "accepted_branches": sorted(accepted),
         "date": dt.date.today().strftime("%y%m%d"),
         "board": args.board, "prefix": args.prefix, "categories": categories,
-        "groups": {}, "tickets": {},
+        "jira_base": jira.base, "groups": {}, "tickets": {},
+        "checks": str(args.checks.resolve()) if args.checks else "",
     }
     issues_by_key = {issue["key"]: issue for issue in rated}
     issues_by_key.update({issue["key"]: issue for issue in all_issues})
@@ -320,7 +344,7 @@ def collect(args):
             "status": status, "reason": reason, "base": base,
         }
     save(args.state, state)
-    report(state)
+    report(state, args.state)
 
 
 def ticket_for(state, key):
@@ -364,6 +388,17 @@ def decide(args, state):
             ticket.update(status="ready", reason="")
         else:
             ticket.update(status="difficult", reason="No patched version; wait for upstream or replace the package")
+    save(args.state, state)
+    report(state, args.state)
+
+
+def skip(args, state):
+    ticket = ticket_for(state, args.ticket)
+    if ticket["status"] not in SKIPPABLE:
+        raise WorkflowError("Only ready, decision, or difficult tickets can be skipped")
+    if ticket["base"] in state["groups"] and state["groups"][ticket["base"]].get("commit"):
+        raise WorkflowError("Group already committed; collect a new run for further changes")
+    ticket.update(status="skipped", reason="Skipped in the report; Jira unchanged")
     save(args.state, state)
 
 
@@ -549,9 +584,9 @@ def repair_alert(workspace, alert, ticket):
         command(["pnpm", "dedupe"], cwd=workspace)
         risk = upgrade_risk(before, dependency_versions(workspace))
         if risk == "major" and not ticket.get("allow_major"):
-            raise WorkflowError("Major upgrade requires --allow-major approval")
+            raise ApprovalNeeded("Major upgrade requires --allow-major approval", "major")
         if risk == "minor" and not ticket.get("allow_minor"):
-            raise WorkflowError("Minor upgrade requires a changelog review and --allow-minor approval")
+            raise ApprovalNeeded("Minor upgrade requires a changelog review and --allow-minor approval", "minor")
         advisories = audit(workspace)
         if not findings(advisories, alert):
             return "Updated {} and its dependents".format(alert["package"])
@@ -605,6 +640,15 @@ def checks_for(path, config):
     if not selected:
         raise WorkflowError("No source changes to verify")
     return selected
+
+
+def load_checks(args, state):
+    if getattr(args, "checks", None):
+        state["checks"] = str(args.checks.resolve())
+        save(args.state, state)
+    if not state.get("checks"):
+        raise WorkflowError("No checks file saved; pass --checks or collect with --checks")
+    return read_checks(Path(state["checks"]))
 
 
 def read_checks(file):
@@ -673,7 +717,7 @@ def verify_group(state, group, state_path, config):
 
 
 def apply(args, state):
-    config = read_checks(args.checks)
+    config = load_checks(args, state)
     bases = sorted({ticket["base"] for ticket in state["tickets"].values() if ticket["status"] == "ready"})
     for base in bases:
         group = ensure_group(state, base, args.state)
@@ -694,7 +738,7 @@ def apply(args, state):
                 continue
             ticket["work_started"] = True
             snapshots = {}
-            ticket.update(status="applying", repair_mode="automatic")
+            ticket.update(status="applying", repair_mode="automatic", approval=None)
             save(args.state, state)
             try:
                 if "upstream" in text(ticket["rating_statement"]).lower():
@@ -721,12 +765,12 @@ def apply(args, state):
                 except (WorkflowError, OSError):
                     save(args.state, state)
                     raise
-                ticket.update(status="difficult", reason=str(exc))
+                ticket.update(status="difficult", reason=str(exc), approval=getattr(exc, "level", None))
             save(args.state, state)
         if any(ticket["base"] == base and ticket["status"] == "changed"
                for ticket in state["tickets"].values()):
             verify_group(state, group, args.state, config)
-    report(state)
+    report(state, args.state)
 
 
 def record(args, state):
@@ -755,7 +799,7 @@ def prepare(args, state):
         bases = {args.base}
     for base in sorted(bases):
         ensure_group(state, base, args.state)
-    report(state)
+    report(state, args.state)
 
 
 def start_progress(state, group, state_path):
@@ -777,7 +821,7 @@ def start_progress(state, group, state_path):
 
 
 def verify(args, state):
-    config = read_checks(args.checks)
+    config = load_checks(args, state)
     if args.base not in state["groups"]:
         raise WorkflowError("No worktree for this base; run apply or record first")
     group = ensure_group(state, args.base, args.state)
@@ -874,7 +918,7 @@ def publish(args, state):
                 except WorkflowError as fallback:
                     ticket.update(status="resolve_failed", reason=str(exc) + "; " + str(fallback))
             save(args.state, state)
-    report(state)
+    report(state, args.state)
 
 
 def cleanup(args, state):
@@ -898,13 +942,240 @@ def cleanup(args, state):
         save(args.state, state)
 
 
-def report(state):
+def link(url, label):
+    if urlsplit(url).scheme != "https":
+        return escape(label)
+    return '<a href="{}" target="_blank" rel="noopener">{}</a>'.format(
+        escape(url, quote=True), escape(label))
+
+
+def report_row(state, ticket):
+    key, status = ticket["key"], ticket["status"]
+    base = ticket.get("base") or ""
+    group = state["groups"].get(base, {})
+    jira = state.get("jira_base", "")
+    key_cell = link(jira + "/browse/" + quote(key), key) if jira else escape(key)
+    buttons = []
+    if status == "decision":
+        options = ticket["affects_versions"] or [state["default_branch"]]
+        items = "".join(
+            '<option value="{0}"{1}>{0}</option>'.format(
+                escape(option, quote=True), " selected" if option == base else "")
+            for option in options)
+        buttons.append('<select data-role="base">{}</select>'.format(items))
+        buttons.append('<button data-action="approve">Approve</button>')
+    elif status == "difficult" and base and ticket.get("approval"):
+        buttons.append('<button data-action="approve">Approve {} upgrade</button>'.format(
+            escape(ticket["approval"])))
+    elif status == "difficult" and base:
+        buttons.append('<button data-action="approve">Prepare repair</button>')
+    if base and status in ("difficult", "failed", "changed") and not ticket.get("approval"):
+        buttons.append(
+            '<select data-role="record-status"><option selected>changed</option>'
+            '<option>difficult</option><option>failed</option></select> '
+            '<input data-role="summary" size="24" placeholder="What changed"> '
+            '<button data-action="record">Record repair</button>')
+    if status in SKIPPABLE:
+        buttons.append('<button data-action="skip">Skip</button>')
+    reason = ticket.get("reason") or ("Waiting for apply" if status == "ready" else "-")
+    cells = [
+        key_cell + "<br><small>" + escape(ticket["summary"]) + "</small>",
+        escape(", ".join(ticket["cves"]) or "-"),
+        escape(", ".join(sorted({alert["package"] for alert in ticket["alerts"]})) or "-"),
+        escape(base or "-"),
+        escape(FIXABLE.get(status, status)),
+        '<span class="badge {0}">{0}</span>'.format(escape(status)),
+        escape(reason),
+        link(group["pr"], "Pull request") if group.get("pr") else "-",
+        '<span class="actions">' + " ".join(buttons) + "</span>",
+    ]
+    return ('<tr data-key="{}" data-status="{}" data-base="{}" data-approval="{}"><td>{}</td></tr>').format(
+        escape(key, quote=True), escape(status, quote=True), escape(base, quote=True),
+        escape(ticket.get("approval") or "", quote=True), "</td><td>".join(cells))
+
+
+def render_report(state, state_path):
+    counts = {}
+    for ticket in state["tickets"].values():
+        counts[ticket["status"]] = counts.get(ticket["status"], 0) + 1
+    summary = " · ".join("{}: {}".format(escape(name), count) for name, count in sorted(counts.items()))
+    rows = "\n".join(report_row(state, ticket) for ticket in state["tickets"].values())
+    config = json.dumps({
+        "state": str(state_path), "script": str(Path(__file__).resolve()),
+        "accepted": state.get("accepted_branches", []), "checks": state.get("checks", ""),
+    }).replace("<", "\\u003c")
+    return (REPORT_TEMPLATE.replace("__CONFIG__", config)
+            .replace("__SUMMARY__", summary).replace("__ROWS__", rows))
+
+
+def write_report(path, content):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(content)
+
+
+def report(state, state_path):
     print("Ticket\tBase\tStatus\tDetails")
     for ticket in state["tickets"].values():
         detail = ticket.get("reason", "").replace("\n", " ").replace("\t", " ")
         print("{}\t{}\t{}\t{}".format(ticket["key"], ticket.get("base") or "-", ticket["status"], detail))
     for base, group in state["groups"].items():
         print("{}: {}{}".format(base, group["path"], " " + group["pr"] if group.get("pr") else ""))
+    path = state_path.with_suffix(".html")
+    write_report(path, render_report(state, state_path))
+    print("HTML report: " + str(path))
+
+
+REPORT_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CVE repair report</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 24px; color: #1f2328; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-bottom: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
+th { background: #f6f8fa; }
+.badge { border-radius: 12px; padding: 2px 8px; background: #eaeef2; white-space: nowrap; }
+.badge.ready, .badge.fixed, .badge.resolved, .badge.changed { background: #dafbe1; }
+.badge.difficult, .badge.failed, .badge.resolve_failed { background: #ffebe9; }
+.badge.decision { background: #fff8c5; }
+tr.approved { background: #f0fff4; }
+tr.skipped { color: #656d76; background: #f6f8fa; }
+.actions button, .actions select { margin: 2px; }
+pre { background: #f6f8fa; padding: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>CVE repair report</h1>
+<p>__SUMMARY__</p>
+<table>
+<thead><tr><th>Ticket</th><th>CVE</th><th>Package</th><th>Base</th><th>Can it be fixed?</th>
+<th>Status</th><th>How it got fixed or why not</th><th>PR</th><th>Decision</th></tr></thead>
+<tbody>
+__ROWS__
+</tbody>
+</table>
+<h2>Next commands</h2>
+<p id="open"></p>
+<p>Run the blocks in order. Blocks 2 and 3 appear when they apply. Each change regenerates this page's commands.</p>
+Checks file: <input id="checks" size="60" placeholder="/absolute/path/to/checks.json">
+<button id="copy">Copy commands</button> <button id="clear">Clear selections</button>
+<pre id="commands"></pre>
+<script>
+const CONFIG = __CONFIG__;
+const storeKey = "fix-cve:" + CONFIG.state;
+let choices = JSON.parse(localStorage.getItem(storeKey) || "{}");
+const quote = value => /^[\\w.\\/@:=-]+$/.test(value) ? value : "'" + value.replace(/'/g, "'\\\\''") + "'";
+const run = args => args.map(quote).join(" ");
+const rows = () => [...document.querySelectorAll("tr[data-key]")];
+const python = ["python3", CONFIG.script];
+const checksInput = document.getElementById("checks");
+checksInput.value = CONFIG.checks;
+
+const checksArgs = () => {
+  const value = checksInput.value.trim();
+  return value && value !== CONFIG.checks ? ["--checks", value] : [];
+};
+
+function pruneStale() {
+  for (const row of rows()) {
+    const choice = choices[row.dataset.key];
+    if (choice && choice.seen !== row.dataset.status) delete choices[row.dataset.key];
+  }
+}
+
+function commandBlocks() {
+  const skips = [], decides = [], prepares = [], records = [], verifies = new Set();
+  let open = 0, fixed = 0;
+  for (const row of rows()) {
+    const key = row.dataset.key, status = row.dataset.status, choice = choices[key];
+    if (["fixed", "resolved"].includes(status)) fixed++;
+    if (choice && choice.action === "skip") {
+      skips.push(run([...python, "skip", CONFIG.state, key]));
+      continue;
+    }
+    if (["decision", "ready", "applying", "changed", "failed"].includes(status)) open++;
+    if (!choice) continue;
+    const flags = CONFIG.accepted.includes(choice.base) ? [] : ["--still-do"];
+    if (choice.action === "approve" && status === "decision") {
+      decides.push(run([...python, "decide", CONFIG.state, key, "--base", choice.base, ...flags]));
+    } else if (choice.action === "approve" && row.dataset.approval) {
+      decides.push(run([...python, "decide", CONFIG.state, key, "--base", choice.base, ...flags,
+        "--allow-" + row.dataset.approval]));
+    } else if (choice.action === "approve") {
+      prepares.push(run([...python, "prepare", CONFIG.state, "--base", choice.base]));
+    } else if (choice.action === "record") {
+      records.push(run([...python, "record", CONFIG.state, key, "--status", choice.recordStatus,
+        "--summary", choice.summary]));
+      if (choice.recordStatus === "changed") verifies.add(choice.base);
+    }
+  }
+  const lines = ["# 1. Run now", ...skips, ...decides,
+    run([...python, "apply", CONFIG.state, ...checksArgs()]), ...prepares];
+  if (records.length || verifies.size) {
+    lines.push("", "# 2. After editing the worktrees: record and verify", ...records);
+    for (const base of verifies) {
+      lines.push(run([...python, "verify", CONFIG.state, "--base", base, ...checksArgs()]));
+    }
+  }
+  if (open === 0 && fixed > 0) {
+    lines.push("", "# 3. Publish", run([...python, "publish", CONFIG.state, "--yes"]),
+      run([...python, "cleanup", CONFIG.state]), run([...python, "report", CONFIG.state]));
+  }
+  return { lines, open };
+}
+
+function paint() {
+  pruneStale();
+  localStorage.setItem(storeKey, JSON.stringify(choices));
+  for (const row of rows()) {
+    const choice = choices[row.dataset.key];
+    row.classList.toggle("approved", !!choice && choice.action !== "skip");
+    row.classList.toggle("skipped", !!choice && choice.action === "skip");
+  }
+  const { lines, open } = commandBlocks();
+  document.getElementById("open").textContent = open
+    ? "Open items: " + open + ". Publish appears when nothing is open."
+    : "Nothing open.";
+  document.getElementById("commands").textContent = lines.join("\\n");
+}
+
+document.querySelector("tbody").addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  const row = button.closest("tr"), key = row.dataset.key, action = button.dataset.action;
+  if (choices[key] && choices[key].action === action) {
+    delete choices[key];
+  } else if (action === "record") {
+    const summary = row.querySelector("input[data-role=summary]").value.trim();
+    if (!summary) {
+      alert("Enter a short summary of the repair.");
+      return;
+    }
+    choices[key] = {
+      action, seen: row.dataset.status, base: row.dataset.base, summary,
+      recordStatus: row.querySelector("select[data-role=record-status]").value,
+    };
+  } else {
+    const select = row.querySelector("select[data-role=base]");
+    choices[key] = { action, seen: row.dataset.status, base: select ? select.value : row.dataset.base };
+  }
+  paint();
+});
+
+checksInput.addEventListener("input", paint);
+document.getElementById("clear").addEventListener("click", () => {
+  choices = {};
+  paint();
+});
+document.getElementById("copy").addEventListener("click", () =>
+  navigator.clipboard.writeText(document.getElementById("commands").textContent));
+paint();
+</script>
+</body>
+</html>
+"""
 
 
 def parser():
@@ -917,7 +1188,8 @@ def parser():
     collect_parser.add_argument("--status-category", action="append")
     collect_parser.add_argument("--release-page", default="40869657")
     collect_parser.add_argument("--state", type=Path, required=True)
-    for name in ("decide", "prepare", "apply", "record", "verify", "publish", "cleanup", "report"):
+    collect_parser.add_argument("--checks", type=Path, help="Verification config; saved in the state file")
+    for name in ("decide", "skip", "prepare", "apply", "record", "verify", "publish", "cleanup", "report"):
         child = sub.add_parser(name)
         child.add_argument("state", type=Path)
         if name == "decide":
@@ -927,8 +1199,10 @@ def parser():
             child.add_argument("--still-do", action="store_true")
             child.add_argument("--allow-minor", action="store_true")
             child.add_argument("--allow-major", action="store_true")
+        elif name == "skip":
+            child.add_argument("ticket")
         elif name in ("apply", "verify"):
-            child.add_argument("--checks", type=Path, required=True)
+            child.add_argument("--checks", type=Path, help="Verification config; saved once in the state file")
             if name == "verify":
                 child.add_argument("--base", required=True)
         elif name == "record":
@@ -957,7 +1231,7 @@ def main(argv=None):
             else:
                 state = load(args.state)
                 if args.action == "report":
-                    report(state)
+                    report(state, args.state)
                 else:
                     globals()[args.action](args, state)
         return 0

@@ -300,5 +300,81 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(["git", "worktree", "remove", Path(directory)], command.call_args.args[0])
 
 
+class ReportTests(unittest.TestCase):
+    def state(self, jira_base="https://jira.example.com"):
+        ticket = {
+            "key": "CMS-1", "summary": "<script>alert(1)</script>", "cves": ["CVE-2026-1"],
+            "alerts": [{"package": "example"}], "base": "main", "status": "ready",
+            "affects_versions": ["main"],
+        }
+        return {
+            "default_branch": "main", "accepted_branches": ["main"], "jira_base": jira_base,
+            "groups": {}, "tickets": {"CMS-1": ticket},
+        }
+
+    def test_report_escapes_text_and_links_only_https_jira(self):
+        html = cve.render_report(self.state(), Path("run.json"))
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertIn('href="https://jira.example.com/browse/CMS-1"', html)
+
+    def test_report_does_not_link_non_https_jira(self):
+        html = cve.render_report(self.state(jira_base="javascript:alert(1)"), Path("run.json"))
+        self.assertNotIn("href=\"javascript", html)
+
+    def test_skip_marks_ticket_and_refuses_committed_group(self):
+        state = self.state()
+        with patch.object(cve, "save") as save:
+            cve.skip(argparse.Namespace(ticket="CMS-1", state=Path("run.json")), state)
+        self.assertEqual("skipped", state["tickets"]["CMS-1"]["status"])
+        save.assert_called_once()
+
+        state = self.state()
+        state["groups"] = {"main": {"commit": "abc"}}
+        with patch.object(cve, "save"):
+            with self.assertRaises(cve.WorkflowError):
+                cve.skip(argparse.Namespace(ticket="CMS-1", state=Path("run.json")), state)
+
+    def test_difficult_ticket_with_pending_upgrade_offers_approval(self):
+        state = self.state()
+        ticket = state["tickets"]["CMS-1"]
+        ticket.update({"status": "difficult", "approval": "major", "base": "main"})
+        html = cve.render_report(state, Path("run.json"))
+        self.assertIn("Approve major upgrade", html)
+        self.assertIn('data-approval="major"', html)
+
+    def test_repaired_ticket_offers_record_form(self):
+        state = self.state()
+        ticket = state["tickets"]["CMS-1"]
+        ticket.update({"status": "difficult", "base": "main"})
+        html = cve.render_report(state, Path("run.json"))
+        self.assertIn('data-role="record-status"', html)
+        self.assertIn('data-action="record"', html)
+
+
+class CheckAndApprovalTests(unittest.TestCase):
+    def test_load_checks_reuses_saved_path_when_flag_omitted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            checks = Path(temp) / "checks.json"
+            checks.write_text(json.dumps({
+                ".": {"build": ["npm", "run", "build"], "lint": ["npm", "run", "lint"],
+                      "test": ["npm", "test"]},
+            }))
+            state = {"checks": str(checks)}
+            args = argparse.Namespace(checks=None, state=Path(temp) / "run.json")
+            config = cve.load_checks(args, state)
+        self.assertIn(".", config)
+
+    def test_load_checks_without_saved_path_fails(self):
+        args = argparse.Namespace(checks=None, state=Path("run.json"))
+        with self.assertRaises(cve.WorkflowError):
+            cve.load_checks(args, {})
+
+    def test_approval_needed_carries_upgrade_level(self):
+        error = cve.ApprovalNeeded("major upgrade needs approval", "major")
+        self.assertIsInstance(error, cve.WorkflowError)
+        self.assertEqual("major", error.level)
+
+
 if __name__ == "__main__":
     unittest.main()

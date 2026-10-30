@@ -46,9 +46,11 @@ python3 "$SCRIPT" collect \
   --repo /absolute/path/to/cms \
   --board 109 --prefix CMS \
   --status-category "To Do" \
+  --checks /absolute/path/to/checks.json \
   --state "$STATE"
 ```
 
+The checks file is saved in the state, so `apply` and `verify` do not need `--checks`.
 Use a separate state directory for each run.
 Keep it outside the repository that you repair.
 The run file contains private ticket data.
@@ -149,6 +151,30 @@ Approval does not permit code changes or overrides.
 The agent handles those repairs manually.
 Moderate-or-lower findings get only easy fixes.
 The agent reports harder repairs for these findings with the option to defer them.
+
+### Review the HTML report
+
+`report` writes `<state>.html` next to the state file.
+The page lists every ticket with its CVEs, packages, base, whether it can be fixed, its status, how it was fixed or why it is difficult, and links to its Jira ticket and pull request.
+
+Click **Approve** on a decision ticket, **Approve major/minor upgrade** on a ticket that waits for an upgrade decision, or **Prepare repair** on a difficult ticket.
+Click **Skip** on any ready, decision, or difficult ticket.
+For a manual repair, choose the status, enter a short summary, and click **Record repair**.
+The page builds the matching commands under **Next commands**:
+
+1. **Run now:** `skip`, `decide`, `apply`, and `prepare` for the selections.
+2. **After editing the worktrees:** `record` and `verify`. It appears only for recorded repairs.
+3. **Publish:** `publish --yes`, `cleanup`, and `report`. It appears only when no ticket is still open.
+
+Copy the commands and run them in order.
+The checks file is saved by `collect --checks`.
+Pass `--checks` on `apply` or `verify` only to replace it.
+`skip` only changes the local state.
+It does not change Jira.
+
+```sh
+python3 "$SCRIPT" skip "$STATE" CMS-12346
+```
 
 ### Handle difficult repairs
 

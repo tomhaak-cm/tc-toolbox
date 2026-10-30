@@ -44,7 +44,7 @@ Done when every actionable ticket has one permitted base branch.
 
 Read the target repository's instructions and documented verification commands.
 Create a verification JSON file with build, lint, and unit-test commands that cover all affected packages.
-Run `apply --checks`.
+Pass `--checks` to `collect` so the path is saved, then run `apply`.
 The script owns worktree creation, automatic pnpm upgrades, verification, assignment, and Start Progress.
 
 Use these repair rules:
@@ -68,8 +68,9 @@ Done when every attempted ticket has a status, change summary, and verification 
 
 ## 4. Review difficult repairs
 
-Show a table with ticket, branch, status, and possible difficult repairs.
-Ask which difficult repairs to implement.
+Show the HTML report (`<state>.html`) with ticket, branch, status, and possible difficult repairs.
+Ask which difficult repairs to implement, or let the user approve, skip, or record them in the report.
+The report's **Next commands** block gives the exact commands for each step, so run those instead of composing them.
 For each selected repair, run `prepare` when necessary and work in that group's worktree.
 Read its repository instructions before edits.
 Use `--allow-major` only after explicit approval of that upgrade.
@@ -80,7 +81,7 @@ Repeat until the user selects no more difficult repairs.
 
 ## 5. Publish
 
-After the user accepts the report, run `publish --yes`.
+After the user accepts the report, run the report's **Publish** block: `publish --yes`, `cleanup`, and `report`.
 The script commits, pushes, opens one PR per changed group, and resolves fixed Jira tickets.
 If Resolve fails, the script attempts Stop Progress and reports the ticket.
 Run `cleanup`.
