@@ -22,6 +22,23 @@ Set these variables in the shell that runs the script:
 | `CONFLUENCE_TOKEN` | Optional. Defaults to `JIRA_TOKEN` |
 | `CONFLUENCE_EMAIL` | Optional. Defaults to `JIRA_EMAIL` |
 
+Store credentials in `~/.config/tc/fix-cve.env`, outside this repository.
+The agent creates the file when it is missing, with mode `600`, from this template:
+
+```sh
+# ~/.config/tc/fix-cve.env
+export JIRA_BASE_URL="https://jira.example.com"
+export JIRA_EMAIL="you@example.com"
+export JIRA_TOKEN="your-token"
+export CONFLUENCE_BASE_URL="https://example.atlassian.net/wiki"
+```
+
+Load it before each script command, because each shell starts without these variables:
+
+```sh
+set -a; . ~/.config/tc/fix-cve.env; set +a
+```
+
 Keep credentials outside this repository.
 The script never saves credentials to the run file.
 It removes Jira, Confluence, and GitHub token variables from the environment of dependency commands and verification commands.
@@ -39,7 +56,7 @@ Authentication and permissions must work before the script can collect a run.
 In the examples, `SCRIPT` names this script's absolute path:
 
 ```sh
-SCRIPT=/absolute/path/to/tc-skills/skills/fix-cve/scripts/fix_cve.py
+SCRIPT=/absolute/path/to/tc-toolbox/skills/fix-cve/scripts/fix_cve.py
 STATE="$HOME/.local/state/tc/cms-cve-20261029/run.json"
 
 python3 "$SCRIPT" collect \

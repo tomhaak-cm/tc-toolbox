@@ -1,4 +1,4 @@
-# tc skills
+# tc toolbox
 
 Keep the plugin manifest and the skills in this repository as the source of truth.
 Treat installed plugin directories as copies.

@@ -15,7 +15,16 @@ A **group** contains tickets with one base branch.
 A **skipped** ticket remains in the report without a repair.
 A **difficult** repair needs an explicit user decision.
 
-## 1. Collect
+## 1. Credentials
+
+Check that `~/.config/tc/fix-cve.env` exists.
+If it is missing, create the directory with mode `700`, create the file from the template in [README.md](README.md) with mode `600`, and ask the user to fill in the values in their editor.
+Never ask for the token in chat or print its value.
+Each bash call starts a new shell, so load the file in every command that runs the script: `set -a; . ~/.config/tc/fix-cve.env; set +a`.
+
+Done when the file exists, has mode `600`, and contains the required variables.
+
+## 2. Collect
 
 Ask once for the Jira board ID, project prefix, and status categories.
 Default the categories to `To Do`.
@@ -30,7 +39,7 @@ For CMS, the script gets supported release branches from Confluence.
 
 Done when the report accounts for every collected ticket.
 
-## 2. Decide branch groups
+## 3. Decide branch groups
 
 Ask once about tickets with several affects versions or an unsupported version.
 Run `decide --base` for each selected version.
@@ -40,7 +49,7 @@ Resolve unclear alert matches before a new collection.
 
 Done when every actionable ticket has one permitted base branch.
 
-## 3. Repair
+## 4. Repair
 
 Read the target repository's instructions and documented verification commands.
 Create a verification JSON file with build, lint, and unit-test commands that cover all affected packages.
@@ -66,7 +75,7 @@ Never mark an unverified repair fixed.
 
 Done when every attempted ticket has a status, change summary, and verification result.
 
-## 4. Review difficult repairs
+## 5. Review difficult repairs
 
 Show the HTML report (`<state>.html`) with ticket, branch, status, and possible difficult repairs.
 Ask which difficult repairs to implement, or let the user approve, skip, or record them in the report.
@@ -79,7 +88,7 @@ Run `verify` after the repair.
 
 Repeat until the user selects no more difficult repairs.
 
-## 5. Publish
+## 6. Publish
 
 After the user accepts the report, run the report's **Publish** block: `publish --yes`, `cleanup`, and `report`.
 The script commits, pushes, opens one PR per changed group, and resolves fixed Jira tickets.
