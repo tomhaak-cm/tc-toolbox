@@ -102,6 +102,7 @@ class CollectionTests(unittest.TestCase):
                     patch.object(cve, "command", return_value=[[alert()]]), \
                     patch.object(cve, "Atlassian") as jira, \
                     patch.object(cve, "report"):
+                jira.return_value.base = "https://jira.example"
                 jira.return_value.board_issues.side_effect = [[ticket], [ticket]]
                 cve.collect(args)
             saved = cve.load(args.state)
@@ -215,6 +216,7 @@ class SafetyTests(unittest.TestCase):
     def test_wont_fix_preserves_existing_versions(self):
         state = {
             "tickets": {"CMS-1": {
+                "key": "CMS-1", "summary": "Fix CVE", "cves": ["CVE-2026-1"], "alerts": [],
                 "status": "decision", "base": "2406.1", "affects_versions": ["2406.1"],
             }},
             "groups": {},

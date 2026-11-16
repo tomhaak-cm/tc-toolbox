@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CVE repair report</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 24px; color: #1f2328; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-bottom: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
+th { background: #f6f8fa; }
+.badge { border-radius: 12px; padding: 2px 8px; background: #eaeef2; white-space: nowrap; }
+.badge.ready, .badge.fixed, .badge.resolved, .badge.changed { background: #dafbe1; }
+.badge.difficult, .badge.failed, .badge.resolve_failed { background: #ffebe9; }
+.badge.decision { background: #fff8c5; }
+tr.approved { background: #f0fff4; }
+tr.skipped { color: #656d76; background: #f6f8fa; }
+.actions button, .actions select { margin: 2px; }
+pre { background: #f6f8fa; padding: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>CVE repair report</h1>
+<p>skipped: 1</p>
+<table>
+<thead><tr><th>Ticket</th><th>CVE</th><th>Package</th><th>Base</th><th>Can it be fixed?</th>
+<th>Status</th><th>How it got fixed or why not</th><th>PR</th><th>Decision</th></tr></thead>
+<tbody>
+<tr data-key="CMS-1" data-status="skipped" data-base="2406.1" data-approval=""><td>CMS-1<br><small>Fix CVE</small></td><td>CVE-2026-1</td><td>-</td><td>2406.1</td><td>Skipped</td><td><span class="badge skipped">skipped</span></td><td>Won&#x27;t Fix Versions: 2406.1</td><td>-</td><td><span class="actions"></span></td></tr>
+</tbody>
+</table>
+<h2>Next commands</h2>
+<p id="open"></p>
+<p>Run the blocks in order. Blocks 2 and 3 appear when they apply. Each change regenerates this page's commands.</p>
+Checks file: <input id="checks" size="60" placeholder="/absolute/path/to/checks.json">
+<button id="copy">Copy commands</button> <button id="clear">Clear selections</button>
+<pre id="commands"></pre>
+<script>
+const CONFIG = {"state": "unused", "script": "/Users/tomhaak/Desktop/workspace/tomhaak-cm/tc-toolbox/skills/fix-cve/scripts/fix_cve.py", "accepted": [], "checks": ""};
+const storeKey = "fix-cve:" + CONFIG.state;
+let choices = JSON.parse(localStorage.getItem(storeKey) || "{}");
+const quote = value => /^[\w.\/@:=-]+$/.test(value) ? value : "'" + value.replace(/'/g, "'\\''") + "'";
+const run = args => args.map(quote).join(" ");
+const rows = () => [...document.querySelectorAll("tr[data-key]")];
+const python = ["python3", CONFIG.script];
+const checksInput = document.getElementById("checks");
+checksInput.value = CONFIG.checks;
+
+const checksArgs = () => {
+  const value = checksInput.value.trim();
+  return value && value !== CONFIG.checks ? ["--checks", value] : [];
+};
+
+function pruneStale() {
+  for (const row of rows()) {
+    const choice = choices[row.dataset.key];
+    if (choice && choice.seen !== row.dataset.status) delete choices[row.dataset.key];
+  }
+}
+
+function commandBlocks() {
+  const skips = [], decides = [], prepares = [], records = [], verifies = new Set();
+  let open = 0, fixed = 0;
+  for (const row of rows()) {
+    const key = row.dataset.key, status = row.dataset.status, choice = choices[key];
+    if (["fixed", "resolved"].includes(status)) fixed++;
+    if (choice && choice.action === "skip") {
+      skips.push(run([...python, "skip", CONFIG.state, key]));
+      continue;
+    }
+    if (["decision", "ready", "applying", "changed", "failed"].includes(status)) open++;
+    if (!choice) continue;
+    const flags = CONFIG.accepted.includes(choice.base) ? [] : ["--still-do"];
+    if (choice.action === "approve" && status === "decision") {
+      decides.push(run([...python, "decide", CONFIG.state, key, "--base", choice.base, ...flags]));
+    } else if (choice.action === "approve" && row.dataset.approval) {
+      decides.push(run([...python, "decide", CONFIG.state, key, "--base", choice.base, ...flags,
+        "--allow-" + row.dataset.approval]));
+    } else if (choice.action === "approve") {
+      prepares.push(run([...python, "prepare", CONFIG.state, "--base", choice.base]));
+    } else if (choice.action === "record") {
+      records.push(run([...python, "record", CONFIG.state, key, "--status", choice.recordStatus,
+        "--summary", choice.summary]));
+      if (choice.recordStatus === "changed") verifies.add(choice.base);
+    }
+  }
+  const lines = ["# 1. Run now", ...skips, ...decides,
+    run([...python, "apply", CONFIG.state, ...checksArgs()]), ...prepares];
+  if (records.length || verifies.size) {
+    lines.push("", "# 2. After editing the worktrees: record and verify", ...records);
+    for (const base of verifies) {
+      lines.push(run([...python, "verify", CONFIG.state, "--base", base, ...checksArgs()]));
+    }
+  }
+  if (open === 0 && fixed > 0) {
+    lines.push("", "# 3. Publish", run([...python, "publish", CONFIG.state, "--yes"]),
+      run([...python, "cleanup", CONFIG.state]), run([...python, "report", CONFIG.state]));
+  }
+  return { lines, open };
+}
+
+function paint() {
+  pruneStale();
+  localStorage.setItem(storeKey, JSON.stringify(choices));
+  for (const row of rows()) {
+    const choice = choices[row.dataset.key];
+    row.classList.toggle("approved", !!choice && choice.action !== "skip");
+    row.classList.toggle("skipped", !!choice && choice.action === "skip");
+  }
+  const { lines, open } = commandBlocks();
+  document.getElementById("open").textContent = open
+    ? "Open items: " + open + ". Publish appears when nothing is open."
+    : "Nothing open.";
+  document.getElementById("commands").textContent = lines.join("\n");
+}
+
+document.querySelector("tbody").addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  const row = button.closest("tr"), key = row.dataset.key, action = button.dataset.action;
+  if (choices[key] && choices[key].action === action) {
+    delete choices[key];
+  } else if (action === "record") {
+    const summary = row.querySelector("input[data-role=summary]").value.trim();
+    if (!summary) {
+      alert("Enter a short summary of the repair.");
+      return;
+    }
+    choices[key] = {
+      action, seen: row.dataset.status, base: row.dataset.base, summary,
+      recordStatus: row.querySelector("select[data-role=record-status]").value,
+    };
+  } else {
+    const select = row.querySelector("select[data-role=base]");
+    choices[key] = { action, seen: row.dataset.status, base: select ? select.value : row.dataset.base };
+  }
+  paint();
+});
+
+checksInput.addEventListener("input", paint);
+document.getElementById("clear").addEventListener("click", () => {
+  choices = {};
+  paint();
+});
+document.getElementById("copy").addEventListener("click", () =>
+  navigator.clipboard.writeText(document.getElementById("commands").textContent));
+paint();
+</script>
+</body>
+</html>

@@ -276,7 +276,7 @@ def match_alerts(issue, alerts):
 def collect(args):
     if args.state.exists():
         raise WorkflowError("State already exists; choose a new --state path")
-    if args.checks:
+    if getattr(args, "checks", None):
         read_checks(args.checks)
     root, repo, default = repository(args.repo)
     if root == args.state.resolve().parent or root in args.state.resolve().parents:
@@ -307,7 +307,7 @@ def collect(args):
         "date": dt.date.today().strftime("%y%m%d"),
         "board": args.board, "prefix": args.prefix, "categories": categories,
         "jira_base": jira.base, "groups": {}, "tickets": {},
-        "checks": str(args.checks.resolve()) if args.checks else "",
+        "checks": str(args.checks.resolve()) if getattr(args, "checks", None) else "",
     }
     issues_by_key = {issue["key"]: issue for issue in rated}
     issues_by_key.update({issue["key"]: issue for issue in all_issues})
@@ -620,6 +620,7 @@ def fingerprint(path):
 
 
 def checks_for(path, config):
+    path = path.resolve()
     selected, covered = [], set()
     changes = changed_files(path)
     for directory, checks in config.items():
@@ -644,8 +645,10 @@ def checks_for(path, config):
 
 def load_checks(args, state):
     if getattr(args, "checks", None):
+        config = read_checks(args.checks)
         state["checks"] = str(args.checks.resolve())
         save(args.state, state)
+        return config
     if not state.get("checks"):
         raise WorkflowError("No checks file saved; pass --checks or collect with --checks")
     return read_checks(Path(state["checks"]))
