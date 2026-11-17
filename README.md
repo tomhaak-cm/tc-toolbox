@@ -13,7 +13,7 @@ The `tools/` folder contains standalone scripts. They are not skills:
 
 | Tool | Purpose |
 |---|---|
-| [fix-cves](tools/fix-cves/README.md) | Repair high and critical `pnpm audit` findings and write a log and HTML report, locally or in CI |
+| [fix-cves](tools/fix-cves/README.md) | Repair high and critical npm and pnpm audit findings and write a log and HTML report, locally or in CI |
 
 `plugin.json` and `skills/` preserve the installed plugin layout.
 This repository is the source of truth.

@@ -1,56 +1,60 @@
 # Fix CVEs
 
-`fix_cves.py` repairs high and critical `pnpm audit` findings in a Git repository.
+`fix_cves.py` repairs high and critical audit findings in pnpm and npm workspaces of a Git repository.
 It runs locally and in CI.
-It needs Python 3.9 or later, Git, pnpm, and registry access.
+It needs Python 3.9 or later, Git, the package manager used by the workspace (pnpm or npm), and registry access.
 `--push` also needs an authenticated `gh` CLI.
 The script uses only the Python standard library.
 
 ## Procedure
 
-The script follows the team procedure for each pnpm workspace:
+The script follows the team procedure for each pnpm or npm workspace:
 
-1. Run `pnpm install --frozen-lockfile`.
-2. Run `pnpm audit --registry=https://registry.npmjs.org/ --audit-level high`.
+1. Run `pnpm install --frozen-lockfile` (npm: `npm ci`).
+2. Run `pnpm audit --registry=https://registry.npmjs.org/ --audit-level high` (npm: `npm audit`).
    Keep only high and critical advisories.
 3. For each vulnerable package:
    1. If the advisory has no patched version, stop. Report "no patched version".
-   2. Run `pnpm -r up <package>` and `pnpm dedupe`, then audit again.
-   3. If the advisory remains, find the direct dependents with `pnpm -r why <package>@<version>`.
+   2. Run `pnpm -r up <package>` and `pnpm dedupe`, then audit again (npm: `npm update` and `npm dedupe`).
+   3. If the advisory remains, find the direct dependents with `pnpm -r why <package>@<version>` (npm: `npm explain`).
       Upgrade each dependent with `pnpm -r up` and `pnpm dedupe`, breadth-first.
       If a dependent does not solve the advisory, continue with the dependents of that dependent.
    4. If a workspace package pins the vulnerable range, stop. Report the package that pins it.
    5. If an upgrade causes a major version jump, stop. Report it.
-   6. After a failure, restore `package.json`, `pnpm-lock.yaml`, and `pnpm-workspace.yaml`, then reinstall.
+   6. After a failure, restore the manifest and lockfile snapshots of the workspace, then reinstall.
 4. Last resort, only with `--allow-override`: run `pnpm audit --registry=https://registry.npmjs.org/ --audit-level high --fix`.
-5. Run the verification checks for the workspace.
+5. Run the verification checks for each workspace that the script upgraded.
    If a check fails, revert all upgrades in that workspace.
 6. Audit again and compare the result with the first audit.
 
-If dependency files changed, the script creates the branch `venus/fix-cves-YYMMDD-<BASE>` and commits these files.
+With `--commit` or `--push`, and only when dependency files changed, the script creates the branch `venus/fix-cves-YYMMDD-<BASE>` and commits these files.
 A `/` in the base name becomes `-`.
-With `--push`, the script pushes the branch and creates a PR against the base branch.
+With `--push`, the script also pushes the branch and creates a PR against the base branch.
+The PR uses the repository's pull request template when one exists, and appends the run summary.
 
 ## Usage
 
 Check out and update the base branch first.
 The repository must have no uncommitted changes to tracked files.
+Without `--commit` or `--push`, the script changes dependency files in the working tree and commits nothing.
 
 ```sh
-python3 tools/fix-cves/fix_cves.py --repo /path/to/cms --out /tmp/fix-cves-report
+python3 tools/fix-cves/fix_cves.py --repo /path/to/cms --out /tmp/fix-cves-report --commit
 ```
 
 | Option | Purpose |
 |---|---|
 | `--repo DIR` | Git repository. Default: current directory |
-| `--base NAME` | Base branch name. Default: current branch. Required on a detached HEAD |
-| `--workspace DIR` | Workspace relative to the repository, for example `apps/studio-client`. Repeatable. Default: each directory with a `pnpm-lock.yaml` |
-| `--checks FILE` | Verification commands, see below |
+| `--base NAME` | Base branch name. Default: current branch. The run pulls the branch, so it needs a checked-out branch |
+| `--workspace DIR` | Workspace relative to the repository, for example `apps/studio-client`. Repeatable. Default: discovered npm and pnpm workspace roots |
+| `--dryrun`, `--audit-only` | Audit only. No pull, dependency changes, or report files. Cannot combine with `--commit` or `--push` |
+| `--commit` | Create the fix branch and commit dependency changes |
+| `--checks FILE` | Replace the automatic build, lint, and test commands, see below |
 | `--out DIR` | Report directory. Default: `./fix-cves-report` |
 | `--registry URL` | Audit registry. Default: `https://registry.npmjs.org/` |
 | `--allow-major` | Permit major upgrades. Use only after explicit approval |
 | `--allow-override` | Permit the `pnpm audit --fix` override. Use only after explicit approval |
-| `--push` | Push the branch and create a PR with `gh` |
+| `--push` | Commit if needed, push the branch, and create a PR with `gh`. Implies `--commit` |
 
 Minor upgrades are permitted.
 The report marks them for a changelog review.
@@ -70,11 +74,13 @@ Each command is an argument array, not a shell string.
 }
 ```
 
-The script runs the checks in the workspace directory, only when that workspace changed.
+Without `--checks`, the script uses the `build`, `lint`, and `test` scripts that each workspace defines.
+For pnpm and npm workspace roots, it runs them across all packages with `--if-present`.
+The script runs the checks in each workspace directory after its upgrades.
 
 ## Reports
 
-The script writes two files in the `--out` directory:
+Unless `--dryrun` is set, the script writes two files in the `--out` directory:
 
 - `report.log`: all commands, results, and a summary.
 - `report.html`: solved advisories and how the script solved them, and open advisories and why the script could not solve them.

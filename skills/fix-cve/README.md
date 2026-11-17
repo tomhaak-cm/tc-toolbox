@@ -41,7 +41,7 @@ set -a; . ~/.config/tc/fix-cve.env; set +a
 
 Keep credentials outside this repository.
 The script never saves credentials to the run file.
-It removes Jira, Confluence, and GitHub token variables from the environment of dependency commands and verification commands.
+It removes every `JIRA_*` and `CONFLUENCE_*` variable, plus `GH_TOKEN` and `GITHUB_TOKEN`, from the environment of pnpm commands and verification commands.
 These commands still inherit other variables, including registry credentials.
 Run dependency commands only in repositories that you trust.
 
