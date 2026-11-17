@@ -1,8 +1,8 @@
 # Fix CVEs
 
-`fix_cves.py` repairs high and critical audit findings in pnpm and npm workspaces of a Git repository.
+`fix_cves.mjs` repairs high and critical audit findings in pnpm and npm workspaces of a Git repository.
 It runs locally and in CI.
-It needs Python 3.9 or later, Git, NVM, Corepack, and registry access.
+It needs Node.js 18 or later, Git, NVM, Corepack, and registry access.
 The script scans the repository for `package.json` files with an `engines` field.
 It selects a Node.js version that satisfies all declared ranges with NVM.
 It uses Corepack to select compatible npm, pnpm, or Yarn versions when necessary.
@@ -10,7 +10,7 @@ If a version is missing, NVM or Corepack installs it.
 The selected versions apply only to the script and its subprocesses.
 If the selection or installation fails, the script shows an error and exits with code `3`.
 `--push` also needs an authenticated `gh` CLI.
-The script uses only the Python standard library.
+The script uses only Node.js built-in modules.
 
 ## Procedure
 
@@ -45,7 +45,7 @@ The repository must have no uncommitted changes to tracked files.
 Without `--commit` or `--push`, the script changes dependency files in the working tree and commits nothing.
 
 ```sh
-python3 tools/fix-cves/fix_cves.py --repo /path/to/cms --out /tmp/fix-cves-report --commit
+node tools/fix-cves/fix_cves.mjs --repo /path/to/cms --out /tmp/fix-cves-report --commit
 ```
 
 | Option | Purpose |
@@ -119,7 +119,7 @@ After you merge an override:
 - run: |
     git config user.name "ci-bot"
     git config user.email "ci-bot@example.com"
-    python3 tools/fix-cves/fix_cves.py --base "$BASE_BRANCH" --out fix-cves-report --push
+    node tools/fix-cves/fix_cves.mjs --base "$BASE_BRANCH" --out fix-cves-report --push
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 - uses: actions/upload-artifact@v4
@@ -136,5 +136,5 @@ Run the script only in repositories that you trust.
 ## Development
 
 ```sh
-python3 -m unittest tests/test_fix_cves.py -v
+node --test tests/fix_cves.test.mjs
 ```
