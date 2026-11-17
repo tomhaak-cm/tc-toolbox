@@ -230,6 +230,14 @@ const consoleSink = (color) => ({
   },
 });
 
+/** @param {string} message @returns {() => void} */
+function showProgress(message) {
+  if (!process.stdout.isTTY) return () => {};
+  const width = Math.max(1, (process.stdout.columns || 80) - 1);
+  process.stdout.write(`\r\x1b[2K${message.slice(0, width)}`);
+  return () => process.stdout.write("\r\x1b[2K");
+}
+
 /** @param {string} file @returns {Sink} */
 const fileSink = (file) => ({
   write: (message) => {
@@ -273,12 +281,18 @@ function childEnv(tool) {
 function execute(args, cwd, allowed) {
   info(`$ ${args.join(" ")}    [${cwd}]`);
   const [tool, ...rest] = args;
-  const result = spawnSync(tool, rest, {
-    cwd,
-    env: childEnv(tool),
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  });
+  const clearProgress = showProgress(`Running ${args.slice(0, 2).join(" ")}`);
+  let result;
+  try {
+    result = spawnSync(tool, rest, {
+      cwd,
+      env: childEnv(tool),
+      encoding: "utf8",
+      maxBuffer: 256 * 1024 * 1024,
+    });
+  } finally {
+    clearProgress();
+  }
   if (result.error) throw new Failure(`Cannot run ${tool}: ${result.error.message}`);
   const status = result.status ?? -1;
   if (!allowed.includes(status)) {
