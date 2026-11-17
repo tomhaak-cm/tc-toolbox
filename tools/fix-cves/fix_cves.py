@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report npm/pnpm vulnerabilities and try to fix high and critical findings.
 
-Python standard library, git, Node.js, npm/pnpm, and (for --push) gh.
+Python standard library, git, the tools named in package.json engines, and (for --push) gh.
 CVE lookups require GH_TOKEN, GITHUB_TOKEN, or an authenticated gh.
 Use --dryrun for a terminal report without file or Git changes.
 """
@@ -34,7 +34,7 @@ OVERRIDE_NOTE = (
     "Override from `pnpm audit --fix`. It breaks semver. Tell the maintainers, "
     "create a follow-up CMS issue with advisory links to remove the override, and add a release note."
 )
-EXIT_MISSING_TOOL = 3
+EXIT_ENGINE_MISMATCH = 3
 log = logging.getLogger("fix-cves")
 
 
@@ -42,7 +42,7 @@ class Failure(Exception):
     pass
 
 
-class MissingTool(Failure):
+class EngineMismatch(Failure):
     pass
 
 
@@ -168,12 +168,94 @@ def candidate_workspaces(repo, selected):
     return [(repo / w).resolve() for w in selected] or find_workspaces(repo)
 
 
-def require_tools(workspaces):
-    needed = ["node"] + sorted({manager(workspace) for workspace in workspaces})
-    missing = [tool for tool in needed if shutil.which(tool) is None]
-    if missing:
-        raise MissingTool("Required tool not found on PATH: {}. Install it and run again.".format(
-            ", ".join(missing)))
+WILDCARDS = ("", "x", "X", "*")
+COMPARATOR = re.compile(r"(<=|>=|<|>|=|\^|~)?\s*([0-9A-Za-z.*+-]+)")
+
+
+def find_projects(repo):
+    found = []
+    for directory, dirs, files in os.walk(repo):
+        dirs[:] = sorted(name for name in dirs if name not in SKIP_DIRS)
+        if "package.json" not in files:
+            continue
+        path = Path(directory)
+        engines = json.loads((path / "package.json").read_text()).get("engines")
+        if engines:
+            found.append((path.relative_to(repo) / "package.json", engines))
+    return found
+
+
+def version_parts(text):
+    core = re.split(r"[-+]", text.strip().lstrip("v"), maxsplit=1)[0]
+    parts = []
+    for part in core.split(".")[:3]:
+        if part in WILDCARDS:
+            break
+        if not part.isdigit():
+            raise Failure("Cannot read version or range bound: {}".format(text))
+        parts.append(int(part))
+    return parts
+
+
+def padded(parts):
+    return tuple((parts + [0, 0, 0])[:3])
+
+
+def bump(parts, index):
+    return padded(parts[:index] + [parts[index] + 1])
+
+
+def comparator_matches(operator, text, installed):
+    parts = version_parts(text)
+    if not parts:
+        return True
+    low, partial = padded(parts), len(parts) < 3
+    if operator in ("", "="):
+        return low <= installed < bump(parts, len(parts) - 1) if partial else installed == low
+    if operator == "^":
+        index = next((i for i, part in enumerate(parts) if part), len(parts) - 1)
+        return low <= installed < bump(parts, index)
+    if operator == "~":
+        return low <= installed < bump(parts, 0 if len(parts) == 1 else 1)
+    if operator == ">=":
+        return installed >= low
+    if operator == ">":
+        return installed >= bump(parts, len(parts) - 1) if partial else installed > low
+    if operator == "<":
+        return installed < low
+    if operator == "<=":
+        return installed < bump(parts, len(parts) - 1) if partial else installed <= low
+    raise Failure("Unknown operator in engines range: {}".format(operator))
+
+
+def satisfies(installed_text, requirement):
+    if not isinstance(requirement, str):
+        raise Failure("Engines range must be a string: {!r}".format(requirement))
+    installed = padded(version_parts(installed_text))
+    for alternative in requirement.split("||"):
+        if re.search(r"\s-\s", alternative):
+            low, high = re.split(r"\s+-\s+", alternative.strip(), maxsplit=1)
+            pairs = [(">=", low), ("<=", high)]
+        else:
+            pairs = COMPARATOR.findall(alternative)
+        if all(comparator_matches(operator, text, installed) for operator, text in pairs):
+            return True
+    return False
+
+
+def require_engines(repo):
+    declared = {}
+    for project, engines in find_projects(repo):
+        for tool, requirement in engines.items():
+            declared.setdefault(tool, []).append((project, requirement))
+    for tool in sorted(declared):
+        if shutil.which(tool) is None:
+            raise EngineMismatch("{} is not on PATH, but {} requires it".format(tool, declared[tool][0][0]))
+        installed = run([tool, "--version"], repo).strip()
+        for project, requirement in declared[tool]:
+            if not satisfies(installed, requirement):
+                raise EngineMismatch('Installed {} {} does not satisfy "{}" from {}'.format(
+                    tool, installed, requirement, project))
 
 
 def install(workspace, frozen=True):
@@ -746,10 +828,10 @@ def main(argv=None):
 
     repo, base = Path(args.repo).resolve(), args.base or "?"
     results, errors, fix_branch, pr = [], [], None, None
-    missing_tool = False
+    engine_mismatch = False
     try:
         repo = Path(run(["git", "rev-parse", "--show-toplevel"], repo).strip())
-        require_tools(candidate_workspaces(repo, args.workspace))
+        require_engines(repo)
         if not args.audit_only:
             untracked = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repo).split("\0")
             if any(Path(path).name in MANIFESTS for path in untracked if path):
@@ -787,7 +869,7 @@ def main(argv=None):
             fix_branch, pr = publish(repo, base, branch, results, args.push)
     except (Failure, OSError, ValueError) as exc:
         errors.append(str(exc))
-        missing_tool = isinstance(exc, MissingTool)
+        engine_mismatch = isinstance(exc, EngineMismatch)
         log.info("ERROR %s", exc)
 
     meta = [
@@ -805,7 +887,7 @@ def main(argv=None):
         log.removeHandler(handler)
         handler.close()
     if errors:
-        return EXIT_MISSING_TOOL if missing_tool else 2
+        return EXIT_ENGINE_MISMATCH if engine_mismatch else 2
     return 1 if any(r["status"] == "persisting" for r in results) else 0
 
 

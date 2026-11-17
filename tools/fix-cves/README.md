@@ -2,8 +2,9 @@
 
 `fix_cves.py` repairs high and critical audit findings in pnpm and npm workspaces of a Git repository.
 It runs locally and in CI.
-It needs Python 3.9 or later, Git, Node.js, the package manager used by the workspace (pnpm or npm), and registry access.
-The script checks these tools before it changes anything, and exits with code `3` when one is missing.
+It needs Python 3.9 or later, Git, and registry access.
+Before it changes anything, it scans the repository for `package.json` files with an `engines` field.
+It compares each declared range with the installed tool, and exits with code `3` on a mismatch or a missing tool.
 `--push` also needs an authenticated `gh` CLI.
 The script uses only the Python standard library.
 
@@ -96,7 +97,7 @@ A failed lookup does not stop the run.
 | `0` | No high or critical advisory remains |
 | `1` | At least one high or critical advisory remains |
 | `2` | An error occurred, for example a failed install or audit |
-| `3` | Node.js, pnpm, or npm is not on `PATH`. Nothing was changed |
+| `3` | An `engines` range is not satisfied by the installed tool, or the tool is missing. Nothing was changed |
 
 ## Overrides
 

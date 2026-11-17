@@ -73,13 +73,26 @@ class FixCvesTests(unittest.TestCase):
                 repair.fix("a", [{"id": "GHSA-1", "patched": "<0.0.0"}])
         run.assert_not_called()
 
-    def test_missing_package_manager_is_reported(self):
-        def which(tool):
-            return None if tool == "pnpm" else "/usr/bin/" + tool
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(fix.shutil, "which", side_effect=which):
-            with self.assertRaisesRegex(fix.MissingTool, "pnpm"):
-                fix.require_tools([workspace(directory)])
+    def test_engine_ranges_match_installed_versions(self):
+        self.assertTrue(fix.satisfies("v18.20.1", "18"))
+        self.assertFalse(fix.satisfies("v24.18.0", "18"))
+        self.assertTrue(fix.satisfies("v20.1.0", "^14 || ^16 || >=18.0"))
+        self.assertFalse(fix.satisfies("9.0.0", "^8.6"))
+        self.assertTrue(fix.satisfies("8.15.0", "^8.6"))
+        self.assertTrue(fix.satisfies("v18.0.0", "18.0.0 - 20.0.0"))
+        self.assertFalse(fix.satisfies("v21.0.0", "18 - 20"))
+
+    def test_require_engines_rejects_mismatched_or_missing_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "package.json").write_text('{"engines": {"node": "18", "pnpm": "^8.6"}}')
+            with patch.object(fix.shutil, "which", return_value="/usr/bin/tool"), \
+                    patch.object(fix, "run", side_effect=["v24.18.0\n", "8.15.0\n"]):
+                with self.assertRaisesRegex(fix.EngineMismatch, "node"):
+                    fix.require_engines(Path(directory))
+            with patch.object(fix.shutil, "which", side_effect=lambda t: None if t == "pnpm" else "/x"), \
+                    patch.object(fix, "run", return_value="v18.20.1\n"):
+                with self.assertRaisesRegex(fix.EngineMismatch, "pnpm is not on PATH"):
+                    fix.require_engines(Path(directory))
 
 
 if __name__ == "__main__":
