@@ -700,7 +700,8 @@ def main(argv=None):
     parser.add_argument("--commit", action="store_true", help="Create a fix branch and commit dependency changes")
     parser.add_argument("--checks", help='Override automatic build/lint/test commands. JSON: '
                         '{"<workspace>": {"<name>": ["argv", ...]}}')
-    parser.add_argument("--out", default="fix-cves-report", help="Report directory (default: ./fix-cves-report)")
+    parser.add_argument("--out", default="cache/fix-cves-report",
+                        help="Report directory (default: ./cache/fix-cves-report)")
     parser.add_argument("--registry", default=REGISTRY)
     parser.add_argument("--allow-major", action="store_true", help="Permit major upgrades (explicit approval)")
     parser.add_argument("--allow-override", action="store_true",
