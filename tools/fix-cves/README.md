@@ -40,8 +40,11 @@ The PR uses the repository's pull request template when one exists, and appends 
 
 ## Usage
 
-Check out and update the base branch first.
-The repository must have no uncommitted changes to tracked files.
+Check out the base branch first.
+If tracked files have uncommitted changes, the script offers four options: discard, stash and pull, skip the pull, or exit.
+The discard option deletes untracked files only if they block the pull.
+In non-interactive runs, the script exits if tracked files have uncommitted changes.
+For `--commit` or `--push`, dependency files must not have uncommitted changes, and no files can be staged.
 Without `--commit` or `--push`, the script changes dependency files in the working tree and commits nothing.
 
 ```sh

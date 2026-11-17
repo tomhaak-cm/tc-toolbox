@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -1683,18 +1684,83 @@ function publish(repo, base, branch, results, push) {
 /**
  * @param {string} repo
  * @param {string | undefined} expectedBranch
+ * @param {string | undefined} reportDir
+ * @param {() => Promise<string>} [choose]
  */
-function pullLatest(repo, expectedBranch) {
-  if (run(["git", "status", "--porcelain", "--untracked-files=no"], repo).trim()) {
-    throw new Failure("The repository has uncommitted changes. Commit or stash them before pulling.");
-  }
+export async function pullLatest(repo, expectedBranch, reportDir, choose = choosePullAction) {
   const current = run(["git", "branch", "--show-current"], repo).trim();
   if (!current) throw new Failure("Detached HEAD: check out a branch before pulling.");
   if (expectedBranch && expectedBranch !== current) {
     throw new Failure(`Check out ${expectedBranch} before running repairs.`);
   }
-  run(["git", "pull", "--ff-only"], repo);
+
+  if (!run(["git", "status", "--porcelain", "--untracked-files=no"], repo).trim()) {
+    run(["git", "pull", "--ff-only"], repo);
+    return current;
+  }
+  const action = await choose();
+  if (action === "skip") return current;
+  if (action === "exit") throw new Failure("Pull canceled because the repository has uncommitted changes.");
+  if (action === "stash") {
+    run(["git", "stash", "push"], repo);
+    let pullError;
+    try {
+      run(["git", "pull", "--ff-only"], repo);
+    } catch (error) {
+      pullError = error;
+    }
+    try {
+      run(["git", "stash", "pop", "--index"], repo);
+    } catch (error) {
+      throw new Failure(`Could not restore the stash. It remains in Git. ${messageOf(error)}${pullError ? ` Pull also failed: ${messageOf(pullError)}` : ""}`);
+    }
+    if (pullError) throw pullError;
+  } else if (action === "discard") {
+    run(["git", "reset", "--hard", "HEAD"], repo);
+    try {
+      run(["git", "pull", "--ff-only"], repo);
+    } catch (error) {
+      const match = messageOf(error).match(/untracked working tree files would be overwritten by merge:\n((?:\t[^\n]+\n)+)/);
+      if (!match) throw error;
+      const files = match[1].slice(0, -1).split("\n").map((file) => file.slice(1));
+      if (files.some((file) => file.startsWith('"') || !isInside(path.resolve(repo, file), repo) ||
+        (reportDir && isInside(path.resolve(repo, file), reportDir)))) {
+        throw new Failure(`Cannot safely remove untracked files that block the pull. ${messageOf(error)}`);
+      }
+      run(["git", "clean", "-f", "-x", "--", ...files.map((file) => `:(literal)${file}`)], repo);
+      run(["git", "pull", "--ff-only"], repo);
+    }
+  } else {
+    throw new Failure("Invalid pull option.");
+  }
   return current;
+}
+
+async function choosePullAction() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Failure("The repository has uncommitted changes. Run interactively or commit or stash them.");
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  const abort = new AbortController();
+  prompt.on("close", () => abort.abort());
+  try {
+    for (;;) {
+      const answer = (await prompt.question(
+        "The repository has uncommitted changes. Choose an option:\n" +
+        "  1. Discard tracked changes and pull (also delete untracked files that block the pull)\n" +
+        "  2. Stash, pull, and restore the stash\n" +
+        "  3. Skip pulling\n" +
+        "  4. Exit\n> ", { signal: abort.signal },
+      )).trim();
+      const action = { "1": "discard", "2": "stash", "3": "skip", "4": "exit" }[answer];
+      if (action) return action;
+    }
+  } catch (error) {
+    if (abort.signal.aborted) throw new Failure("Pull canceled because the input closed.");
+    throw error;
+  } finally {
+    prompt.close();
+  }
 }
 
 /* ---------- CLI ---------- */
@@ -1784,15 +1850,24 @@ async function main() {
   try {
     repo = resolvePath(run(["git", "rev-parse", "--show-toplevel"], repo).trim());
     engineTools = requireEngines(repo);
+    const current = auditOnly
+      ? run(["git", "branch", "--show-current"], repo).trim()
+      : await pullLatest(repo, values.base, out);
     if (!auditOnly) {
       const untracked = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repo).split("\0");
       if (untracked.some((file) => file && MANIFESTS.includes(path.basename(file)))) {
         throw new Failure("The repository has untracked dependency files. Track them before running repairs.");
       }
+      if (fixArgs.commit || fixArgs.push) {
+        if (run(["git", "diff", "--cached", "--name-only", "-z"], repo)) {
+          throw new Failure("The repository has staged changes. Commit or stash them before using --commit or --push.");
+        }
+        const changed = run(["git", "diff", "--name-only", "-z"], repo).split("\0");
+        if (changed.some((file) => file && MANIFESTS.includes(path.basename(file)))) {
+          throw new Failure("The repository has uncommitted dependency changes. Commit or stash them before using --commit or --push.");
+        }
+      }
     }
-    const current = auditOnly
-      ? run(["git", "branch", "--show-current"], repo).trim()
-      : pullLatest(repo, values.base);
     base = values.base || current;
     const branch = branchName(base, new Date());
     if ((fixArgs.commit || fixArgs.push) && run(["git", "branch", "--list", branch], repo).trim()) {
