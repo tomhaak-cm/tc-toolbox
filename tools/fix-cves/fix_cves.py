@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report npm/pnpm vulnerabilities and try to fix high and critical findings.
 
-Python standard library, git, npm/pnpm, and (for --push) gh.
+Python standard library, git, Node.js, npm/pnpm, and (for --push) gh.
 CVE lookups require GH_TOKEN, GITHUB_TOKEN, or an authenticated gh.
 Use --dryrun for a terminal report without file or Git changes.
 """
@@ -13,6 +13,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -33,10 +34,15 @@ OVERRIDE_NOTE = (
     "Override from `pnpm audit --fix`. It breaks semver. Tell the maintainers, "
     "create a follow-up CMS issue with advisory links to remove the override, and add a release note."
 )
+EXIT_MISSING_TOOL = 3
 log = logging.getLogger("fix-cves")
 
 
 class Failure(Exception):
+    pass
+
+
+class MissingTool(Failure):
     pass
 
 
@@ -156,6 +162,18 @@ def manager(workspace):
         return declared
     return "pnpm" if (workspace / "pnpm-lock.yaml").exists() or (
         workspace / "pnpm-workspace.yaml").exists() else "npm"
+
+
+def candidate_workspaces(repo, selected):
+    return [(repo / w).resolve() for w in selected] or find_workspaces(repo)
+
+
+def require_tools(workspaces):
+    needed = ["node"] + sorted({manager(workspace) for workspace in workspaces})
+    missing = [tool for tool in needed if shutil.which(tool) is None]
+    if missing:
+        raise MissingTool("Required tool not found on PATH: {}. Install it and run again.".format(
+            ", ".join(missing)))
 
 
 def install(workspace, frozen=True):
@@ -728,8 +746,10 @@ def main(argv=None):
 
     repo, base = Path(args.repo).resolve(), args.base or "?"
     results, errors, fix_branch, pr = [], [], None, None
+    missing_tool = False
     try:
         repo = Path(run(["git", "rev-parse", "--show-toplevel"], repo).strip())
+        require_tools(candidate_workspaces(repo, args.workspace))
         if not args.audit_only:
             untracked = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repo).split("\0")
             if any(Path(path).name in MANIFESTS for path in untracked if path):
@@ -741,7 +761,7 @@ def main(argv=None):
         if (args.commit or args.push) and run(["git", "branch", "--list", branch], repo).strip():
             raise Failure("Branch {} already exists".format(branch))
         checks = load_checks(args.checks, repo)
-        workspaces = [(repo / w).resolve() for w in args.workspace] or find_workspaces(repo)
+        workspaces = candidate_workspaces(repo, args.workspace)
         if not workspaces:
             raise Failure("No npm/pnpm workspace found")
         for workspace in workspaces:
@@ -767,6 +787,7 @@ def main(argv=None):
             fix_branch, pr = publish(repo, base, branch, results, args.push)
     except (Failure, OSError, ValueError) as exc:
         errors.append(str(exc))
+        missing_tool = isinstance(exc, MissingTool)
         log.info("ERROR %s", exc)
 
     meta = [
@@ -784,7 +805,7 @@ def main(argv=None):
         log.removeHandler(handler)
         handler.close()
     if errors:
-        return 2
+        return EXIT_MISSING_TOOL if missing_tool else 2
     return 1 if any(r["status"] == "persisting" for r in results) else 0
 
 

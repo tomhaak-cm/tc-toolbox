@@ -73,6 +73,14 @@ class FixCvesTests(unittest.TestCase):
                 repair.fix("a", [{"id": "GHSA-1", "patched": "<0.0.0"}])
         run.assert_not_called()
 
+    def test_missing_package_manager_is_reported(self):
+        def which(tool):
+            return None if tool == "pnpm" else "/usr/bin/" + tool
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(fix.shutil, "which", side_effect=which):
+            with self.assertRaisesRegex(fix.MissingTool, "pnpm"):
+                fix.require_tools([workspace(directory)])
+
 
 if __name__ == "__main__":
     unittest.main()
