@@ -6,7 +6,6 @@ Each skill folder contains its documentation:
 | Skill | Purpose |
 |---|---|
 | [delegate](skills/delegate/README.md) | Delegate tasks to agents |
-| [fix-cve](skills/fix-cve/README.md) | Repair CVE tickets with a resumable script |
 | [improve-codebase-general](skills/improve-codebase-general/README.md) | Find opportunities to improve code structure |
 
 The `tools/` folder contains standalone scripts. They are not skills:
