@@ -2,9 +2,13 @@
 
 `fix_cves.py` repairs high and critical audit findings in pnpm and npm workspaces of a Git repository.
 It runs locally and in CI.
-It needs Python 3.9 or later, Git, and registry access.
-Before it changes anything, it scans the repository for `package.json` files with an `engines` field.
-It compares each declared range with the installed tool, and exits with code `3` on a mismatch or a missing tool.
+It needs Python 3.9 or later, Git, NVM, Corepack, and registry access.
+The script scans the repository for `package.json` files with an `engines` field.
+It selects a Node.js version that satisfies all declared ranges with NVM.
+It uses Corepack to select compatible npm, pnpm, or Yarn versions when necessary.
+If a version is missing, NVM or Corepack installs it.
+The selected versions apply only to the script and its subprocesses.
+If the selection or installation fails, the script shows an error and exits with code `3`.
 `--push` also needs an authenticated `gh` CLI.
 The script uses only the Python standard library.
 
@@ -49,7 +53,7 @@ python3 tools/fix-cves/fix_cves.py --repo /path/to/cms --out /tmp/fix-cves-repor
 | `--repo DIR` | Git repository. Default: current directory |
 | `--base NAME` | Base branch name. Default: current branch. The run pulls the branch, so it needs a checked-out branch |
 | `--workspace DIR` | Workspace relative to the repository, for example `apps/studio-client`. Repeatable. Default: discovered npm and pnpm workspace roots |
-| `--dryrun`, `--audit-only` | Audit only. No pull, dependency changes, or report files. Cannot combine with `--commit` or `--push` |
+| `--dryrun`, `--audit-only` | Audit only. No pull, repository dependency changes, or report files. Can install engine versions. Cannot combine with `--commit` or `--push` |
 | `--commit` | Create the fix branch and commit dependency changes |
 | `--checks FILE` | Replace the automatic build, lint, and test commands, see below |
 | `--out DIR` | Report directory. Default: `./fix-cves-report` |
@@ -97,7 +101,7 @@ A failed lookup does not stop the run.
 | `0` | No high or critical advisory remains |
 | `1` | At least one high or critical advisory remains |
 | `2` | An error occurred, for example a failed install or audit |
-| `3` | An `engines` range is not satisfied by the installed tool, or the tool is missing. Nothing was changed |
+| `3` | The script could not select or install compatible engine versions |
 
 ## Overrides
 

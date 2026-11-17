@@ -3,11 +3,12 @@
 
 Python standard library, git, the tools named in package.json engines, and (for --push) gh.
 CVE lookups require GH_TOKEN, GITHUB_TOKEN, or an authenticated gh.
-Use --dryrun for a terminal report without file or Git changes.
+Use --dryrun for a terminal report without repository or Git changes.
 """
 
 import argparse
 import datetime as dt
+import itertools
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 from html import escape
 from urllib.error import HTTPError
@@ -244,18 +246,133 @@ def satisfies(installed_text, requirement):
 
 
 def require_engines(repo):
+    temporary = tempfile.TemporaryDirectory(prefix="fix-cves-corepack-")
+    try:
+        used = configure_engines(repo, temporary.name)
+    except BaseException:
+        temporary.cleanup()
+        raise
+    if used:
+        return temporary
+    temporary.cleanup()
+    return None
+
+
+def configure_engines(repo, temporary_dir):
     declared = {}
     for project, engines in find_projects(repo):
         for tool, requirement in engines.items():
             declared.setdefault(tool, []).append((project, requirement))
+
+    def matches(tool, version):
+        return all(satisfies(version, requirement) for _, requirement in declared[tool])
+
+    if "node" in declared:
+        nvm_dir = Path(os.environ.get("NVM_DIR", str(Path.home() / ".nvm")))
+        nvm_script = nvm_dir / "nvm.sh"
+        if not nvm_script.is_file():
+            raise EngineMismatch("NVM not found: {}. Set NVM_DIR to its installation directory.".format(nvm_script))
+
+        def nvm(command, *args, allowed=(0,)):
+            try:
+                return run(["bash", "-c", '. "$1" --no-use && shift && nvm "$@"',
+                            "nvm", str(nvm_script), command, *args], repo, allowed=allowed)
+            except Failure as exc:
+                raise EngineMismatch("NVM {} failed: {}".format(command, exc)) from exc
+
+        def versions(output):
+            return sorted({match.group(1) for line in output.splitlines()
+                           if (match := re.match(r"\s*(?:->\s*)?v(\d+\.\d+\.\d+)(?=\s|$)", line))
+                           and matches("node", match.group(1))}, key=version_parts, reverse=True)
+
+        installed = versions(nvm("ls", "--no-colors", allowed=(0, 3)))
+        if installed:
+            version = installed[0]
+        else:
+            available = versions(nvm("ls-remote", "--no-colors"))
+            if not available:
+                raise EngineMismatch("No Node.js version satisfies all engine requirements: {}".format(
+                    declared["node"]))
+            version = available[0]
+            nvm("install", version)
+        try:
+            path = run(["bash", "-c", '. "$1" --no-use && nvm use --silent "$2" && printf "%s" "$PATH"',
+                        "nvm", str(nvm_script), version], repo).strip()
+        except Failure as exc:
+            raise EngineMismatch("NVM could not switch to Node.js {}: {}".format(version, exc)) from exc
+        os.environ["PATH"] = path
+        try:
+            actual = run(["node", "--version"], repo).strip()
+        except Failure as exc:
+            raise EngineMismatch("Cannot run Node.js after NVM switch: {}".format(exc)) from exc
+        if padded(version_parts(actual)) != padded(version_parts(version)):
+            raise EngineMismatch("NVM selected Node.js {}, but PATH resolves to {}".format(version, actual))
+        log.info("Using Node.js %s", version)
+
+    corepack_enabled = False
     for tool in sorted(declared):
-        if shutil.which(tool) is None:
+        if tool == "node":
+            continue
+        installed = None
+        if shutil.which(tool):
+            try:
+                installed = run([tool, "--version"], repo).strip()
+            except Failure:
+                pass
+        compatible = bool(installed and matches(tool, installed))
+        if compatible and tool in ("npm", "pnpm", "yarn"):
+            for project, requirement in declared[tool]:
+                try:
+                    project_version = run([tool, "--version"], repo / project.parent).strip()
+                    if not satisfies(project_version, requirement):
+                        compatible = False
+                        break
+                except Failure:
+                    compatible = False
+                    break
+        if not compatible and tool in ("npm", "pnpm", "yarn"):
+            if shutil.which("corepack") is None:
+                raise EngineMismatch("Corepack is not on PATH. Install Corepack to switch {}.".format(tool))
+            if not corepack_enabled:
+                cache = Path(os.environ.get("COREPACK_HOME") or (
+                    Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "node" / "corepack"))
+                (cache / "v1").mkdir(parents=True, exist_ok=True)
+                home = Path(temporary_dir) / "home"
+                home.mkdir()
+                (home / "v1").symlink_to(cache / "v1", target_is_directory=True)
+                os.environ["COREPACK_HOME"] = str(home)
+                os.environ["COREPACK_ENABLE_STRICT"] = "0"
+                shim_dir = Path(temporary_dir) / "bin"
+                shim_dir.mkdir()
+                os.environ["PATH"] = str(shim_dir) + os.pathsep + os.environ["PATH"]
+                corepack_enabled = True
+            requirement = " || ".join(
+                " ".join(parts) for parts in itertools.product(
+                    *(value.split("||") for value in dict.fromkeys(
+                        value for _, value in declared[tool]))))
+            try:
+                run(["corepack", "enable", "--install-directory", str(shim_dir), tool], repo)
+                run(["corepack", "prepare", "{}@{}".format(tool, requirement), "--activate"], repo)
+                installed = run([tool, "--version"], repo).strip()
+            except Failure as exc:
+                raise EngineMismatch("Corepack could not install or activate {} {}: {}".format(
+                    tool, requirement, exc)) from exc
+        if installed is None:
             raise EngineMismatch("{} is not on PATH, but {} requires it".format(tool, declared[tool][0][0]))
-        installed = run([tool, "--version"], repo).strip()
         for project, requirement in declared[tool]:
             if not satisfies(installed, requirement):
                 raise EngineMismatch('Installed {} {} does not satisfy "{}" from {}'.format(
                     tool, installed, requirement, project))
+        if not compatible and tool in ("npm", "pnpm", "yarn"):
+            for project, requirement in declared[tool]:
+                try:
+                    project_version = run([tool, "--version"], repo / project.parent).strip()
+                except Failure as exc:
+                    raise EngineMismatch("Corepack could not activate {} for {}: {}".format(tool, project, exc)) from exc
+                if not satisfies(project_version, requirement):
+                    raise EngineMismatch('{} {} does not satisfy "{}" from {}'.format(
+                        tool, project_version, requirement, project))
+    return corepack_enabled
 
 
 def install(workspace, frozen=True):
@@ -796,7 +913,7 @@ def main(argv=None):
     parser.add_argument("--workspace", action="append", default=[],
                         help="npm/pnpm root relative to the repository (repeatable; default: discover roots)")
     parser.add_argument("--dryrun", "--audit-only", dest="audit_only", action="store_true",
-                        help="Audit only. No pull, dependency changes, or report files")
+                        help="Audit only. No pull, repository dependency changes, or report files")
     parser.add_argument("--commit", action="store_true", help="Create a fix branch and commit dependency changes")
     parser.add_argument("--checks", help='Override automatic build/lint/test commands. JSON: '
                         '{"<workspace>": {"<name>": ["argv", ...]}}')
@@ -828,10 +945,11 @@ def main(argv=None):
 
     repo, base = Path(args.repo).resolve(), args.base or "?"
     results, errors, fix_branch, pr = [], [], None, None
-    engine_mismatch = False
+    engine_mismatch, engine_tools = False, None
+    engine_env = {key: os.environ.get(key) for key in ("PATH", "COREPACK_HOME", "COREPACK_ENABLE_STRICT")}
     try:
         repo = Path(run(["git", "rev-parse", "--show-toplevel"], repo).strip())
-        require_engines(repo)
+        engine_tools = require_engines(repo)
         if not args.audit_only:
             untracked = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repo).split("\0")
             if any(Path(path).name in MANIFESTS for path in untracked if path):
@@ -886,6 +1004,13 @@ def main(argv=None):
     for handler in handlers:
         log.removeHandler(handler)
         handler.close()
+    if engine_tools:
+        engine_tools.cleanup()
+    for key, value in engine_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
     if errors:
         return EXIT_ENGINE_MISMATCH if engine_mismatch else 2
     return 1 if any(r["status"] == "persisting" for r in results) else 0
