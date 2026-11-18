@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,7 +11,8 @@ import { fileURLToPath } from "node:url";
 const cli = fileURLToPath(new URL("../tools/fix-cves/fix_cves.mjs", import.meta.url));
 
 function packageManager() {
-  const { readFileSync, writeFileSync } = require("node:fs");
+  const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+  const path = require("node:path");
   const args = process.argv.slice(2);
   const command = args[0] === "-r" ? args[1] : args[0];
   const npm = process.argv[1].endsWith("/npm");
@@ -68,7 +71,23 @@ function packageManager() {
     const graph = { ...member(), dependencies: { bridge: { version: "1.0.0", dependencies: {
       adapter: { version: "1.0.0", dependencies: { problem: { version } } },
     } } } };
-    emit(npm ? graph : [graph]);
+    if (args.includes("--parseable")) {
+      for (const pkg of [
+        { name: "bridge", version: "1.0.0" },
+        { name: "adapter", version: "1.0.0" },
+        { name: "problem", version },
+      ]) {
+        const dir = path.join(process.cwd(), "node_modules", ".pnpm", `${pkg.name}@test`,
+          "node_modules", pkg.name);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
+        console.log(dir);
+      }
+      console.log(path.join(process.cwd(), "node_modules", ".pnpm", "encoding@0.1.14",
+        "node_modules", "encoding"));
+    } else {
+      emit(npm ? graph : [graph]);
+    }
   } else if (command === "up" || command === "update") {
     const name = args[command === "up" ? 2 : 1];
     if (!args.includes("--ignore-scripts")) process.exit(45);
@@ -88,7 +107,7 @@ function packageManager() {
   }
 }
 
-function fixture(t, mode, tool = "pnpm") {
+function fixture(t, mode, tool = "pnpm", customOutput = true) {
   const root = mkdtempSync(path.join(tmpdir(), "fix-cves-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const app = path.join(root, "app");
@@ -108,8 +127,9 @@ function fixture(t, mode, tool = "pnpm") {
   return {
     run(...args) {
       const out = path.join(root, `out-${runs++}`);
+      const outputArgs = customOutput ? ["--out", out] : [];
       const result = spawnSync(process.execPath, [
-        cli, app, "--registry", "http://localhost:12345/", "--out", out, ...args,
+        cli, app, "--registry", "http://localhost:12345/", ...outputArgs, ...args,
       ], {
         cwd: tmpdir(), encoding: "utf8", env: {
           ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`,
@@ -117,20 +137,36 @@ function fixture(t, mode, tool = "pnpm") {
         },
       });
       assert.equal(result.error, undefined);
+      const reportPath = customOutput
+        ? path.join(out, "report.html")
+        : result.stdout.match(/^HTML report: (.+)$/m)?.[1];
+      assert.ok(reportPath, result.stdout);
       return {
-        ...result, report: readFileSync(path.join(out, "report.html"), "utf8"),
+        ...result, reportPath, report: readFileSync(reportPath, "utf8"),
         lock: readFileSync(lock, "utf8"), member: readFileSync(path.join(app, "package.json"), "utf8"),
         config: tool === "pnpm" ? readFileSync(config, "utf8") : null,
       };
     },
-    memberManifest,
+    memberManifest, root,
   };
 }
+
+test("the default report directory is inside the project node_modules cache", (t) => {
+  const { root, run } = fixture(t, "no-patch", "pnpm", false);
+  const result = run("--audit-only");
+  assert.equal(result.status, 1, result.stdout);
+  assert.equal(path.dirname(path.dirname(result.reportPath)),
+    path.join(realpathSync(root), "node_modules", ".cache"));
+  assert.match(path.basename(path.dirname(result.reportPath)), /^fix-cves-/);
+  assert.ok(existsSync(result.reportPath));
+  assert.equal(result.lock, "original");
+});
 
 test("pnpm walks dependents breadth-first and reports the verified fix from a workspace member", (t) => {
   const { run } = fixture(t, "bfs");
   const result = run();
   assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /> pnpm -r list --depth Infinity --parseable/);
   assert.match(result.stdout, /up problem.*up adapter.*up bridge/s);
   assert.match(result.stdout, /Fixed: problem \[critical\].*CVE-2026-1234.*Updated bridge.*problem: 0.1.1 -> 0.1.2/);
   assert.match(result.report, /<h2>Fixed advisories<\/h2>.*CVE-2026-1234.*&lt;script&gt;/s);

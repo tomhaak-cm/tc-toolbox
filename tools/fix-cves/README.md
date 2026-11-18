@@ -16,6 +16,9 @@ For a workspace member, it audits and repairs the complete shared lockfile.
 
 4. Open `report.html` at the path that the script prints.
 
+By default, the script writes the report to a unique folder under the project root's `node_modules/.cache` directory.
+Git usually ignores `node_modules`. If the script cannot identify a project root, it uses a system temporary directory.
+
 The script needs an existing `pnpm-lock.yaml`, `package-lock.json`, or `npm-shrinkwrap.json`.
 Run it only in a project that you trust. Do not edit the dependency files during the run.
 The script does not check out branches, pull changes, or create commits, PRs, or tickets.
@@ -24,7 +27,7 @@ An audit sends dependency names and versions to the selected registry. For priva
 | Option | Purpose |
 |---|---|
 | `--audit-only` | Write the report without installing or changing dependencies |
-| `--out DIR` | Write `report.html` in this directory. The default is a new system temporary directory |
+| `--out DIR` | Write `report.html` in this directory. The default is under `node_modules/.cache` |
 | `--registry URL` | Set the audit registry. The default is `https://registry.npmjs.org/` |
 | `--allow-major` | Approve major upgrades. A minor change in `0.x` also requires this approval |
 | `--allow-override` | Approve a pnpm override after normal upgrades fail. Major upgrades still require separate approval |

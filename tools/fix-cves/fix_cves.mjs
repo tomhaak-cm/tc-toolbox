@@ -14,7 +14,7 @@ const USAGE = `Usage: node fix_cves.mjs [PACKAGE_DIR] [options]
   --allow-major     Approve major upgrades, including 0.x minor upgrades
   --allow-override  Approve pnpm overrides as a last resort
   --registry URL    Audit registry (default: https://registry.npmjs.org/)
-  --out DIR         Report directory (default: a new temporary directory)
+  --out DIR         Report directory (default: under node_modules/.cache)
   -h, --help        Show this help
 `;
 const REGISTRY = "https://registry.npmjs.org/";
@@ -60,13 +60,13 @@ function runner({ tool, root }, log) {
   return (args, { json = false, codes = [0] } = {}) => {
     log(`> ${[tool, ...args].join(" ")}`);
     const result = spawnSync(tool, args, {
-      cwd: root, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 300_000,
+      cwd: root, env, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: 300_000,
     });
     const command = args[0] === "-r" ? args[1] : args[0];
     if (result.error || !codes.includes(result.status)) {
       throw new Error(`${tool} ${command}: ${result.error?.code ?? `exit ${result.status ?? result.signal}`}`);
     }
-    if (!json) return;
+    if (!json) return result.stdout;
     try {
       return JSON.parse(result.stdout);
     } catch {
@@ -167,10 +167,30 @@ function audit(run, registry) {
 }
 
 function versions(run, tool) {
-  const data = run(tool === "pnpm"
-    ? ["-r", "list", "--depth", "Infinity", "--json"]
-    : ["ls", "--all", "--json"], { json: true });
-  const projects = tool === "pnpm" ? data : [data];
+  if (tool === "pnpm") {
+    const directories = run(["-r", "list", "--depth", "Infinity", "--parseable"])
+      .trim().split(/\r?\n/);
+    const graph = new Map();
+    for (const dir of new Set(directories)) {
+      const file = path.join(dir, "package.json");
+      let pkg;
+      if (existsSync(file)) {
+        pkg = JSON.parse(readFileSync(file, "utf8"));
+      } else {
+        const segments = dir.split(path.sep);
+        const storeKey = segments[segments.lastIndexOf(".pnpm") + 1] ?? "";
+        const match = storeKey.match(/^(@[^+]+\+[^@]+|[^@]+)@(.+)$/);
+        if (!match) throw new Error(`Missing package manifest: ${file}`);
+        pkg = { name: match[1].replace("+", "/"), version: match[2].split("_", 1)[0] };
+      }
+      const { name, version } = pkg;
+      if (name && /^\d+\.\d+\.\d+(?:$|[-+])/.test(version ?? "")) {
+        graph.set(dir, { name, version });
+      }
+    }
+    return graph;
+  }
+  const projects = [run(["ls", "--all", "--json"], { json: true })];
   if (!Array.isArray(projects) || !projects.length || !projects.every((node) => node && typeof node === "object")) {
     throw new Error("Invalid dependency tree.");
   }
@@ -494,16 +514,26 @@ async function main() {
     allowMajor: values["allow-major"], allowOverride: values["allow-override"],
   };
   const target = path.resolve(positionals[0] ?? ".");
-  const out = values.out === undefined ? mkdtempSync(path.join(tmpdir(), "fix-cves-")) : path.resolve(values.out);
+  let project;
+  let packageError;
+  try {
+    project = packageRoot(target);
+  } catch (error) {
+    packageError = error;
+  }
+  const defaultParent = project ? path.join(project.root, "node_modules", ".cache") : tmpdir();
+  mkdirSync(defaultParent, { recursive: true });
+  const out = values.out === undefined
+    ? mkdtempSync(path.join(defaultParent, "fix-cves-"))
+    : path.resolve(values.out);
   mkdirSync(out, { recursive: true });
   const file = path.join(out, "report.html");
   const fd = openSync(file, "wx", 0o600);
   const report = { initial: new Map(), current: new Map(), details: new Map() };
   const log = (line) => console.log(clean(line));
-  let root = target;
+  let root = project?.root ?? target;
   try {
-    const project = packageRoot(target);
-    root = project.root;
+    if (packageError) throw packageError;
     log(`Auditing ${root} with ${project.tool}.`);
     repair(project, options, report, log);
   } catch (error) {
