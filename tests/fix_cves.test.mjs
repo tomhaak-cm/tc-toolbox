@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { branchName, pullLatest, satisfies, upgradeRisk } from "../tools/fix-cves/fix_cves.mjs";
+import { branchName, cleanIncompatiblePnpmModules, pullLatest, satisfies, upgradeRisk } from "../tools/fix-cves/fix_cves.mjs";
 
 function git(repo, ...args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -84,6 +84,40 @@ test("stash remains available when restoring changes conflicts with the pull", a
 
 test("branch name encodes slashes in the base", () => {
   assert.equal(branchName("release/2406", new Date(2026, 9, 30)), "venus/fix-cves-261030-release-2406");
+});
+
+test("pnpm cleanup requires a lockfile mismatch and stays within workspace members", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "fix-cves-pnpm-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workspace = path.join(dir, "workspace");
+  const member = path.join(workspace, "member");
+  const ignored = path.join(workspace, "ignored");
+  const outside = path.join(dir, "outside");
+  for (const project of [workspace, member, ignored, outside]) {
+    mkdirSync(path.join(project, "node_modules"), { recursive: true });
+  }
+  const store = path.join(workspace, "node_modules", ".pnpm");
+  mkdirSync(store);
+  writeFileSync(path.join(workspace, "pnpm-lock.yaml"), "lockfileVersion: '6.0'\n");
+  const installed = path.join(store, "lock.yaml");
+  const listMember = () => [{ path: member }];
+
+  cleanIncompatiblePnpmModules(workspace, listMember);
+  writeFileSync(installed, "lockfileVersion: 6.0\n");
+  cleanIncompatiblePnpmModules(workspace, listMember);
+  assert.ok(existsSync(installed));
+
+  writeFileSync(installed, "lockfileVersion: '9.0'\n");
+  assert.throws(
+    () => cleanIncompatiblePnpmModules(workspace, () => [...listMember(), { path: outside }]),
+    /Refusing to clean node_modules outside the workspace/,
+  );
+  assert.ok(existsSync(installed));
+  assert.ok(existsSync(path.join(member, "node_modules")));
+
+  cleanIncompatiblePnpmModules(workspace, listMember);
+  for (const project of [workspace, member]) assert.ok(!existsSync(path.join(project, "node_modules")));
+  for (const project of [ignored, outside]) assert.ok(existsSync(path.join(project, "node_modules")));
 });
 
 test("upgrade risk treats a 0.x minor jump as major", () => {

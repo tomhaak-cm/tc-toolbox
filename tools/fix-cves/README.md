@@ -17,6 +17,7 @@ The script uses only Node.js built-in modules.
 The script follows the team procedure for each pnpm or npm workspace:
 
 1. Run `pnpm install --frozen-lockfile` (npm: `npm ci`).
+   If the pnpm lockfile formats differ, the script first removes `node_modules` from the workspace root and its member packages.
 2. Run `pnpm audit --registry=https://registry.npmjs.org/ --audit-level high` (npm: `npm audit`).
    Keep only high and critical advisories.
 3. For each vulnerable package:

@@ -806,6 +806,41 @@ function install(workspace, frozen = true) {
   }
 }
 
+/** @param {string} workspace */
+export function cleanIncompatiblePnpmModules(workspace, listProjects = runJson) {
+  const wantedFile = "pnpm-lock.yaml";
+  const installedFile = "node_modules/.pnpm/lock.yaml";
+  /** @param {string} file */
+  const lockVersion = (file) => {
+    const fullPath = path.join(workspace, file);
+    if (!existsSync(fullPath)) return undefined;
+    const match = /^lockfileVersion:[ \t]*(['"]?)(\d+)(?:\.(\d+))?\1[ \t]*(?:#.*)?\r?$/m.exec(
+      readFileSync(fullPath, "utf8"),
+    );
+    return match && `${match[2]}.${match[3] ?? "0"}`;
+  };
+  const wanted = lockVersion(wantedFile);
+  const installed = lockVersion(installedFile);
+  if (!wanted || !installed || wanted === installed) return;
+
+  const root = realpathSync(workspace);
+  const projects = listProjects(["pnpm", "-r", "list", "--depth", "-1", "--json"], root);
+  if (!Array.isArray(projects)) throw new Failure("pnpm did not return a list of workspace members");
+  const dirs = new Set([root]);
+  for (const project of projects) {
+    if (typeof project?.path !== "string" || !path.isAbsolute(project.path)) {
+      throw new Failure("pnpm did not return an absolute path for a workspace member");
+    }
+    const dir = realpathSync(project.path);
+    if (!isInside(dir, root)) throw new Failure(`Refusing to clean node_modules outside the workspace: ${dir}`);
+    dirs.add(dir);
+  }
+  info(`Installed pnpm lockfile version ${installed} differs from ${wanted}. Reinstalling ${workspace} from scratch.`);
+  for (const dir of dirs) {
+    rmSync(path.join(dir, "node_modules"), { recursive: true, force: true });
+  }
+}
+
 /**
  * @param {string} workspace
  * @returns {Map<string, Buffer>}
@@ -1296,6 +1331,7 @@ async function repairWorkspace(workspace, args, checks, initial) {
     return all.map((a) => withStatus(a, "deferred", "Deferred until a normal dependency upgrade."));
   }
 
+  if (manager(workspace) === "pnpm") cleanIncompatiblePnpmModules(workspace);
   install(workspace);
   const original = snapshot(workspace);
   /** @type {Map<string, string>} */
