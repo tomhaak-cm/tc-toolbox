@@ -29,6 +29,7 @@ An audit sends dependency names and versions to the selected registry. For priva
 | `--audit-only` | Write the report without installing or changing dependencies |
 | `--out DIR` | Write `report.html` in this directory. The default is under `node_modules/.cache` |
 | `--registry URL` | Set the audit registry. The default is `https://registry.npmjs.org/` |
+| `--fallback-registry URL` | Retry a failed audit with this registry. Use only if you approve sending dependency names and versions to it |
 | `--allow-major` | Approve major upgrades. A minor change in `0.x` also requires this approval |
 | `--allow-override` | Approve a pnpm override after normal upgrades fail. Major upgrades still require separate approval |
 

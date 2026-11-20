@@ -14,6 +14,8 @@ const USAGE = `Usage: node fix_cves.mjs [PACKAGE_DIR] [options]
   --allow-major     Approve major upgrades, including 0.x minor upgrades
   --allow-override  Approve pnpm overrides as a last resort
   --registry URL    Audit registry (default: https://registry.npmjs.org/)
+  --fallback-registry URL
+                    Retry failed audits with this registry
   --out DIR         Report directory (default: under node_modules/.cache)
   -h, --help        Show this help
 `;
@@ -126,8 +128,12 @@ function restore(files, saved) {
   }
 }
 
-function audit(run, registry) {
-  const data = run(["audit", "--json", `--registry=${registry}`], { json: true, codes: [0, 1] });
+function audit(run, registry, fallbackRegistry, log) {
+  let data = run(["audit", "--json", `--registry=${registry}`], { json: true, codes: [0, 1] });
+  if (data?.error && fallbackRegistry && fallbackRegistry !== registry) {
+    log(`Audit failed at ${registry}; retrying with ${fallbackRegistry}.`);
+    data = run(["audit", "--json", `--registry=${fallbackRegistry}`], { json: true, codes: [0, 1] });
+  }
   const records = new Map();
   function add(raw, pkg, nodes, patched) {
     if (!PACKAGE.test(pkg ?? "") || !(raw.id ?? raw.source) || !raw.severity) {
@@ -275,7 +281,7 @@ function repair(project, options, report, log) {
   const run = runner(project, log);
   const { tool } = project;
   const { files, names, workspaceFlags } = projectFiles(project, run);
-  const readAudit = () => audit(run, options.registry);
+  const readAudit = () => audit(run, options.registry, options.fallbackRegistry, log);
   const install = (frozen) => run(tool === "pnpm"
     ? ["install", frozen ? "--frozen-lockfile" : "--no-frozen-lockfile", "--ignore-scripts"]
     : ["ci", "--ignore-scripts", "--no-audit"]);
@@ -502,6 +508,7 @@ async function main() {
       "allow-major": { type: "boolean" },
       "allow-override": { type: "boolean" },
       registry: { type: "string" },
+      "fallback-registry": { type: "string" },
       out: { type: "string" },
     },
   });
@@ -509,8 +516,14 @@ async function main() {
   if (positionals.length > 1) throw new Error("Specify one package directory.");
   const registry = httpUrl(values.registry ?? REGISTRY);
   if (!registry || registry.search || registry.hash) throw new Error("Specify an HTTP(S) registry URL without credentials.");
+  const fallbackRegistry = values["fallback-registry"] === undefined
+    ? undefined : httpUrl(values["fallback-registry"]);
+  if (values["fallback-registry"] !== undefined
+    && (!fallbackRegistry || fallbackRegistry.search || fallbackRegistry.hash)) {
+    throw new Error("Specify an HTTP(S) fallback registry URL without credentials.");
+  }
   const options = {
-    registry: registry.href, auditOnly: values["audit-only"],
+    registry: registry.href, fallbackRegistry: fallbackRegistry?.href, auditOnly: values["audit-only"],
     allowMajor: values["allow-major"], allowOverride: values["allow-override"],
   };
   const target = path.resolve(positionals[0] ?? ".");
@@ -543,7 +556,7 @@ async function main() {
   try {
     const rows = reportRows(report, options.auditOnly);
     // Send only public advisory IDs, never repository data or registry credentials.
-    if (registry.href === REGISTRY) await findCves(rows, log);
+    if ([registry.href, fallbackRegistry?.href].includes(REGISTRY)) await findCves(rows, log);
     for (const row of rows) {
       log(`${row.status}: ${row.pkg} [${row.severity}] ${[row.id, ...row.cves].join(" / ")}. ${row.detail}`);
     }

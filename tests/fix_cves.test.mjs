@@ -44,6 +44,9 @@ function packageManager() {
       if (!args.includes("--ignore=GHSA-2222-2222-3333")) process.exit(47);
       writeFileSync("pnpm-workspace.yaml", "override");
       update();
+    } else if (mode === "fallback-audit" && !args.includes("--registry=https://registry.npmjs.org/")) {
+      emit({ error: { code: "ERR_PNPM_AUDIT_BAD_RESPONSE", message: "registry unauthorized" } });
+      process.exitCode = 1;
     } else if (mode === "broken-audit" && !vulnerable) {
       emit({ error: "registry down" });
       process.exitCode = 1;
@@ -92,7 +95,7 @@ function packageManager() {
     const name = args[command === "up" ? 2 : 1];
     if (!args.includes("--ignore-scripts")) process.exit(45);
     if (mode === "bfs" && name === "bridge" || mode === "failed-update" || [
-      "major", "broken-audit", "regression", "npm-patch",
+      "major", "broken-audit", "fallback-audit", "regression", "npm-patch",
     ].includes(mode)) update();
     if (mode === "failed-update") {
       writeFileSync("app/package.json", "{}");
@@ -172,6 +175,24 @@ test("pnpm walks dependents breadth-first and reports the verified fix from a wo
   assert.match(result.report, /<h2>Fixed advisories<\/h2>.*CVE-2026-1234.*&lt;script&gt;/s);
   assert.doesNotMatch(result.report, /javascript:|<script>/);
   assert.equal(result.lock, "updated");
+});
+
+test("an explicitly configured fallback registry retries failed audits", (t) => {
+  const { run } = fixture(t, "fallback-audit");
+  const result = run("--fallback-registry", "https://registry.npmjs.org/");
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /retrying with https:\/\/registry\.npmjs\.org\//);
+  assert.match(result.stdout, /> pnpm audit --json --registry=https:\/\/registry\.npmjs\.org\//);
+  assert.match(result.stdout, /1 fixed, 0 open/);
+  assert.equal(result.lock, "updated");
+});
+
+test("a configured fallback registry stays unused when the primary audit succeeds", (t) => {
+  const { run } = fixture(t, "bfs");
+  const result = run("--fallback-registry", "https://registry.npmjs.org/");
+  assert.equal(result.status, 0, result.stdout);
+  assert.doesNotMatch(result.stdout, /retrying with/);
+  assert.doesNotMatch(result.stdout, /--registry=https:\/\/registry\.npmjs\.org\//);
 });
 
 test("npm reports individual advisories, not meta-vulnerabilities", (t) => {
