@@ -5,6 +5,7 @@ Each skill folder contains its documentation:
 
 | Skill | Purpose |
 |---|---|
+| [commit](skills/commit/README.md) | Write commit messages with a `Models:` trailer |
 | [delegate](skills/delegate/README.md) | Delegate tasks to agents |
 | [fix-cves](skills/fix-cves/SKILL.md) | Triage dependency advisories and review upgrade decisions |
 | [improve-codebase-general](skills/improve-codebase-general/README.md) | Find opportunities to improve code structure |
