@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "matcher": "bash",
+        "bash": "node \"$COPILOT_HOOK_DIR/require-tc-commit.mjs\"",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

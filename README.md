@@ -16,6 +16,18 @@ The `tools/` folder contains standalone scripts. They are not skills:
 |---|---|
 | [fix-cves](tools/fix-cves/README.md) | Repair high and critical npm and pnpm audit findings and write an HTML report |
 
+The `hooks/` folder contains Copilot CLI hooks:
+
+| Hook | Purpose |
+|---|---|
+| [require-tc-commit](hooks/require-tc-commit.mjs) | Block a `git commit` that has no `Models:` trailer, so that agents use `/tc:commit` |
+
+To install a hook in all repositories, link its `.json` and `.mjs` files into `~/.copilot/hooks/`:
+
+```sh
+ln -s "$PWD/hooks/require-tc-commit.json" "$PWD/hooks/require-tc-commit.mjs" ~/.copilot/hooks/
+```
+
 `plugin.json` and `skills/` preserve the installed plugin layout.
 This repository is the source of truth.
 The installed plugin remains unchanged until you update it from this repository.
